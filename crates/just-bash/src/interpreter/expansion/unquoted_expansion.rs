@@ -9,14 +9,13 @@
 //! - IFS splitting and glob expansion for unquoted contexts
 
 use crate::interpreter::expansion::{
-    apply_pattern_removal, expand_glob_pattern, get_array_elements, get_var_names_with_prefix,
-    has_glob_pattern, PatternRemovalSide,
+    apply_pattern_removal, apply_pattern_replacement_to_slice, get_array_elements,
+    get_var_names_with_prefix, split_and_glob_expand, PatternRemovalSide,
 };
 use crate::interpreter::helpers::{
     get_ifs, get_ifs_separator, is_ifs_empty, split_by_ifs_for_expansion,
 };
 use crate::interpreter::InterpreterState;
-use regex_lite::Regex;
 use std::path::Path;
 
 /// Result type for unquoted expansion handlers.
@@ -270,29 +269,10 @@ pub fn expand_unquoted_array_pattern_replacement(
         };
     }
 
-    // Build final pattern with anchors
-    let final_pattern = if anchor_start {
-        format!("^{}", pattern_regex)
-    } else if anchor_end {
-        format!("{}$", pattern_regex)
-    } else {
-        pattern_regex.to_string()
-    };
-
     // Apply pattern replacement to each element
-    let processed: Vec<String> = match Regex::new(&final_pattern) {
-        Ok(re) => values
-            .iter()
-            .map(|v| {
-                if replace_all {
-                    re.replace_all(v, replacement).to_string()
-                } else {
-                    re.replace(v, replacement).to_string()
-                }
-            })
-            .collect(),
-        Err(_) => values,
-    };
+    let processed = apply_pattern_replacement_to_slice(
+        &values, pattern_regex, replacement, replace_all, anchor_start, anchor_end,
+    );
 
     if is_star {
         // ${arr[*]/...} - join with IFS first char, then split
@@ -599,7 +579,7 @@ pub fn expand_unquoted_positional_with_prefix_suffix(
 
     // Apply glob expansion to each word
     if !words.is_empty() {
-        words = apply_glob_expansion(&words, cwd, noglob, failglob, nullglob, extglob)?;
+        words = split_and_glob_expand(&words, cwd, failglob, nullglob, noglob, extglob)?;
     }
 
     Ok(UnquotedExpansionResult {
@@ -608,40 +588,6 @@ pub fn expand_unquoted_positional_with_prefix_suffix(
     })
 }
 
-/// Apply glob expansion to a list of values.
-/// If noglob is set, returns the values unchanged.
-/// If a pattern has no matches and failglob is set, returns an error.
-/// If a pattern has no matches and nullglob is set, the pattern is dropped.
-/// Otherwise, returns the pattern unchanged.
-pub fn apply_glob_expansion(
-    values: &[String],
-    cwd: &Path,
-    noglob: bool,
-    failglob: bool,
-    nullglob: bool,
-    extglob: bool,
-) -> Result<Vec<String>, String> {
-    if noglob {
-        return Ok(values.to_vec());
-    }
-
-    let mut expanded: Vec<String> = Vec::new();
-    for value in values {
-        if has_glob_pattern(value, extglob) {
-            let result = expand_glob_pattern(value, cwd, failglob, nullglob, extglob)?;
-            if result.values.is_empty() && !nullglob {
-                // No matches and not nullglob - keep original
-                expanded.push(value.clone());
-            } else {
-                expanded.extend(result.values);
-            }
-        } else {
-            expanded.push(value.clone());
-        }
-    }
-
-    Ok(expanded)
-}
 
 #[cfg(test)]
 mod tests {
@@ -843,23 +789,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.values, Vec::<String>::new());
-    }
-
-    #[test]
-    fn test_apply_glob_expansion_noglob() {
-        let cwd = std::env::current_dir().unwrap();
-        let values = vec!["*.txt".to_string(), "hello".to_string()];
-        let result = apply_glob_expansion(&values, &cwd, true, false, false, false).unwrap();
-        // noglob - values unchanged
-        assert_eq!(result, vec!["*.txt", "hello"]);
-    }
-
-    #[test]
-    fn test_apply_glob_expansion_no_pattern() {
-        let cwd = std::env::current_dir().unwrap();
-        let values = vec!["hello".to_string(), "world".to_string()];
-        let result = apply_glob_expansion(&values, &cwd, false, false, false, false).unwrap();
-        assert_eq!(result, vec!["hello", "world"]);
     }
 
     #[test]

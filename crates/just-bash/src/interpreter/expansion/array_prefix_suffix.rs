@@ -7,8 +7,8 @@
 //! - "${arr[@]:-${default[@]}}" - array default/alternative values
 
 use crate::interpreter::expansion::{
-    apply_pattern_removal, get_array_elements, get_variable, is_variable_set, pattern_to_regex,
-    PatternRemovalSide,
+    apply_pattern_removal, format_element_list, apply_pattern_replacement_to_slice,
+    get_array_elements, get_variable, is_variable_set, PatternRemovalSide,
 };
 use crate::interpreter::helpers::get_ifs_separator;
 use crate::interpreter::InterpreterState;
@@ -21,6 +21,25 @@ pub struct ArrayPrefixSuffixResult {
     pub quoted: bool,
 }
 
+impl ArrayPrefixSuffixResult {
+    fn new(values: Vec<String>) -> Self {
+        Self { values, quoted: true }
+    }
+}
+
+/// Resolve array `array_name` into an element list, falling back to scalar if empty.
+fn resolve_array(state: &InterpreterState, array_name: &str) -> Vec<String> {
+    let elements = get_array_elements(state, array_name);
+    if !elements.is_empty() {
+        return elements.into_iter().map(|(_, v)| v).collect();
+    }
+    if let Some(scalar) = state.env.get(array_name) {
+        vec![scalar.clone()]
+    } else {
+        vec![]
+    }
+}
+
 /// Apply prefix and suffix to array elements.
 /// For [@], prefix is joined to first element, suffix to last.
 /// For [*], all elements are joined with IFS, then prefix and suffix are added.
@@ -31,68 +50,8 @@ pub fn apply_prefix_suffix_to_array(
     prefix: &str,
     suffix: &str,
 ) -> ArrayPrefixSuffixResult {
-    // Get array elements
-    let elements = get_array_elements(state, array_name);
-    let values: Vec<String> = elements.into_iter().map(|(_, v)| v).collect();
-
-    // If no elements, check for scalar (treat as single-element array)
-    if values.is_empty() {
-        if let Some(scalar_value) = state.env.get(array_name) {
-            // Scalar treated as single-element array
-            return ArrayPrefixSuffixResult {
-                values: vec![format!("{}{}{}", prefix, scalar_value, suffix)],
-                quoted: true,
-            };
-        }
-        // Variable is unset or empty array
-        if is_star {
-            // "${arr[*]}" with empty array produces one empty word (prefix + "" + suffix)
-            return ArrayPrefixSuffixResult {
-                values: vec![format!("{}{}", prefix, suffix)],
-                quoted: true,
-            };
-        }
-        // "${arr[@]}" with empty array produces no words (unless there's prefix/suffix)
-        let combined = format!("{}{}", prefix, suffix);
-        return ArrayPrefixSuffixResult {
-            values: if combined.is_empty() {
-                vec![]
-            } else {
-                vec![combined]
-            },
-            quoted: true,
-        };
-    }
-
-    if is_star {
-        // "${arr[*]}" - join all elements with IFS into one word
-        let ifs_sep = get_ifs_separator(&state.env);
-        return ArrayPrefixSuffixResult {
-            values: vec![format!("{}{}{}", prefix, values.join(ifs_sep), suffix)],
-            quoted: true,
-        };
-    }
-
-    // "${arr[@]}" - each element is a separate word
-    // Join prefix with first, suffix with last
-    if values.len() == 1 {
-        return ArrayPrefixSuffixResult {
-            values: vec![format!("{}{}{}", prefix, values[0], suffix)],
-            quoted: true,
-        };
-    }
-
-    let mut result = Vec::with_capacity(values.len());
-    result.push(format!("{}{}", prefix, values[0]));
-    for v in &values[1..values.len() - 1] {
-        result.push(v.clone());
-    }
-    result.push(format!("{}{}", values[values.len() - 1], suffix));
-
-    ArrayPrefixSuffixResult {
-        values: result,
-        quoted: true,
-    }
+    let values = resolve_array(state, array_name);
+    ArrayPrefixSuffixResult::new(format_element_list(values, is_star, prefix, suffix, &state.env))
 }
 
 /// Apply pattern removal with prefix/suffix to array elements.
@@ -106,68 +65,12 @@ pub fn apply_pattern_removal_with_prefix_suffix(
     side: PatternRemovalSide,
     greedy: bool,
 ) -> ArrayPrefixSuffixResult {
-    // Get array elements
-    let elements = get_array_elements(state, array_name);
-    let mut values: Vec<String> = elements.into_iter().map(|(_, v)| v).collect();
-
-    // If no elements, check for scalar (treat as single-element array)
-    if values.is_empty() {
-        if let Some(scalar_value) = state.env.get(array_name) {
-            values = vec![scalar_value.clone()];
-        } else {
-            // Variable is unset or empty array
-            if is_star {
-                return ArrayPrefixSuffixResult {
-                    values: vec![format!("{}{}", prefix, suffix)],
-                    quoted: true,
-                };
-            }
-            let combined = format!("{}{}", prefix, suffix);
-            return ArrayPrefixSuffixResult {
-                values: if combined.is_empty() {
-                    vec![]
-                } else {
-                    vec![combined]
-                },
-                quoted: true,
-            };
-        }
-    }
-
-    // Apply pattern removal to each element
-    let values: Vec<String> = values
+    let values = resolve_array(state, array_name);
+    let processed: Vec<String> = values
         .iter()
         .map(|v| apply_pattern_removal(v, regex_str, side, greedy))
         .collect();
-
-    if is_star {
-        // "${arr[*]#...}" - join all elements with IFS into one word
-        let ifs_sep = get_ifs_separator(&state.env);
-        return ArrayPrefixSuffixResult {
-            values: vec![format!("{}{}{}", prefix, values.join(ifs_sep), suffix)],
-            quoted: true,
-        };
-    }
-
-    // "${arr[@]#...}" - each element is a separate word
-    if values.len() == 1 {
-        return ArrayPrefixSuffixResult {
-            values: vec![format!("{}{}{}", prefix, values[0], suffix)],
-            quoted: true,
-        };
-    }
-
-    let mut result = Vec::with_capacity(values.len());
-    result.push(format!("{}{}", prefix, values[0]));
-    for v in &values[1..values.len() - 1] {
-        result.push(v.clone());
-    }
-    result.push(format!("{}{}", values[values.len() - 1], suffix));
-
-    ArrayPrefixSuffixResult {
-        values: result,
-        quoted: true,
-    }
+    ArrayPrefixSuffixResult::new(format_element_list(processed, is_star, prefix, suffix, &state.env))
 }
 
 /// Apply pattern replacement with prefix/suffix to array elements.
@@ -181,77 +84,9 @@ pub fn apply_pattern_replacement_with_prefix_suffix(
     replacement: &str,
     replace_all: bool,
 ) -> ArrayPrefixSuffixResult {
-    // Get array elements
-    let elements = get_array_elements(state, array_name);
-    let mut values: Vec<String> = elements.into_iter().map(|(_, v)| v).collect();
-
-    // If no elements, check for scalar (treat as single-element array)
-    if values.is_empty() {
-        if let Some(scalar_value) = state.env.get(array_name) {
-            values = vec![scalar_value.clone()];
-        } else {
-            // Variable is unset or empty array
-            if is_star {
-                return ArrayPrefixSuffixResult {
-                    values: vec![format!("{}{}", prefix, suffix)],
-                    quoted: true,
-                };
-            }
-            let combined = format!("{}{}", prefix, suffix);
-            return ArrayPrefixSuffixResult {
-                values: if combined.is_empty() {
-                    vec![]
-                } else {
-                    vec![combined]
-                },
-                quoted: true,
-            };
-        }
-    }
-
-    // Apply pattern replacement to each element
-    let values: Vec<String> = match Regex::new(regex_pattern) {
-        Ok(re) => values
-            .iter()
-            .map(|v| {
-                if replace_all {
-                    re.replace_all(v, replacement).to_string()
-                } else {
-                    re.replace(v, replacement).to_string()
-                }
-            })
-            .collect(),
-        Err(_) => values,
-    };
-
-    if is_star {
-        // "${arr[*]/...}" - join all elements with IFS into one word
-        let ifs_sep = get_ifs_separator(&state.env);
-        return ArrayPrefixSuffixResult {
-            values: vec![format!("{}{}{}", prefix, values.join(ifs_sep), suffix)],
-            quoted: true,
-        };
-    }
-
-    // "${arr[@]/...}" - each element is a separate word
-    if values.len() == 1 {
-        return ArrayPrefixSuffixResult {
-            values: vec![format!("{}{}{}", prefix, values[0], suffix)],
-            quoted: true,
-        };
-    }
-
-    let mut result = Vec::with_capacity(values.len());
-    result.push(format!("{}{}", prefix, values[0]));
-    for v in &values[1..values.len() - 1] {
-        result.push(v.clone());
-    }
-    result.push(format!("{}{}", values[values.len() - 1], suffix));
-
-    ArrayPrefixSuffixResult {
-        values: result,
-        quoted: true,
-    }
+    let values = resolve_array(state, array_name);
+    let processed = apply_pattern_replacement_to_slice(&values, regex_pattern, replacement, replace_all, false, false);
+    ArrayPrefixSuffixResult::new(format_element_list(processed, is_star, prefix, suffix, &state.env))
 }
 
 /// Handle array default value expansion.
@@ -276,64 +111,33 @@ pub fn handle_array_default_value(
         !is_set || (check_empty && is_empty)
     };
 
-    // If not using alternate, return the original array value
     if !should_use_alternate {
         if !elements.is_empty() {
             let values: Vec<String> = elements.into_iter().map(|(_, v)| v).collect();
-            if is_star {
-                let ifs_sep = get_ifs_separator(&state.env);
-                return Some(ArrayPrefixSuffixResult {
-                    values: vec![values.join(ifs_sep)],
-                    quoted: true,
-                });
-            }
-            return Some(ArrayPrefixSuffixResult {
-                values,
-                quoted: true,
-            });
+            return Some(ArrayPrefixSuffixResult::new(
+                format_element_list(values, is_star, "", "", &state.env)
+            ));
         }
         if let Some(scalar_value) = state.env.get(array_name) {
-            return Some(ArrayPrefixSuffixResult {
-                values: vec![scalar_value.clone()],
-                quoted: true,
-            });
+            return Some(ArrayPrefixSuffixResult::new(vec![scalar_value.clone()]));
         }
-        return Some(ArrayPrefixSuffixResult {
-            values: vec![],
-            quoted: true,
-        });
+        return Some(ArrayPrefixSuffixResult::new(vec![]));
     }
 
     // Use the default array
     let default_elements = get_array_elements(state, default_array_name);
     if !default_elements.is_empty() {
         let values: Vec<String> = default_elements.into_iter().map(|(_, v)| v).collect();
-        if default_is_star || is_star {
-            let ifs_sep = get_ifs_separator(&state.env);
-            return Some(ArrayPrefixSuffixResult {
-                values: vec![values.join(ifs_sep)],
-                quoted: true,
-            });
-        }
-        return Some(ArrayPrefixSuffixResult {
-            values,
-            quoted: true,
-        });
+        return Some(ArrayPrefixSuffixResult::new(
+            format_element_list(values, default_is_star || is_star, "", "", &state.env)
+        ));
     }
 
-    // Default array is empty - check for scalar
     if let Some(scalar_value) = state.env.get(default_array_name) {
-        return Some(ArrayPrefixSuffixResult {
-            values: vec![scalar_value.clone()],
-            quoted: true,
-        });
+        return Some(ArrayPrefixSuffixResult::new(vec![scalar_value.clone()]));
     }
 
-    // Default is unset
-    Some(ArrayPrefixSuffixResult {
-        values: vec![],
-        quoted: true,
-    })
+    Some(ArrayPrefixSuffixResult::new(vec![]))
 }
 
 /// Handle scalar variable default value with array default.
@@ -355,51 +159,27 @@ pub fn handle_scalar_default_with_array(
         !is_set || (check_empty && is_empty)
     };
 
-    // If not using alternate, return the scalar value
     if !should_use_alternate {
-        return Some(ArrayPrefixSuffixResult {
-            values: vec![var_value],
-            quoted: true,
-        });
+        return Some(ArrayPrefixSuffixResult::new(vec![var_value]));
     }
 
-    // Use the default array
     let default_elements = get_array_elements(state, default_array_name);
     if !default_elements.is_empty() {
         let values: Vec<String> = default_elements.into_iter().map(|(_, v)| v).collect();
-        if default_is_star {
-            let ifs_sep = get_ifs_separator(&state.env);
-            return Some(ArrayPrefixSuffixResult {
-                values: vec![values.join(ifs_sep)],
-                quoted: true,
-            });
-        }
-        return Some(ArrayPrefixSuffixResult {
-            values,
-            quoted: true,
-        });
+        return Some(ArrayPrefixSuffixResult::new(
+            format_element_list(values, default_is_star, "", "", &state.env)
+        ));
     }
 
-    // Default array is empty - check for scalar
     if let Some(scalar_value) = state.env.get(default_array_name) {
-        return Some(ArrayPrefixSuffixResult {
-            values: vec![scalar_value.clone()],
-            quoted: true,
-        });
+        return Some(ArrayPrefixSuffixResult::new(vec![scalar_value.clone()]));
     }
 
-    // Default is unset
-    Some(ArrayPrefixSuffixResult {
-        values: vec![],
-        quoted: true,
-    })
+    Some(ArrayPrefixSuffixResult::new(vec![]))
 }
 
 /// Check if array assign default should be applied.
-/// Returns (should_assign, array_name, current_values) where:
-/// - should_assign: true if the default value should be assigned
-/// - array_name: the target array name for assignment
-/// - current_values: the current array values
+/// Returns (should_assign, current_values).
 pub fn check_array_assign_default(
     state: &InterpreterState,
     array_name: &str,
@@ -414,18 +194,9 @@ pub fn check_array_assign_default(
     let should_assign = !is_set || (check_empty && is_empty);
 
     let values: Vec<String> = elements.into_iter().map(|(_, v)| v).collect();
-    let result = if is_star {
-        let ifs_sep = get_ifs_separator(&state.env);
-        ArrayPrefixSuffixResult {
-            values: vec![values.join(ifs_sep)],
-            quoted: true,
-        }
-    } else {
-        ArrayPrefixSuffixResult {
-            values,
-            quoted: true,
-        }
-    };
+    let result = ArrayPrefixSuffixResult::new(
+        format_element_list(values, is_star, "", "", &state.env)
+    );
 
     (should_assign, result)
 }
@@ -443,6 +214,7 @@ pub fn parse_array_subscript(parameter: &str) -> Option<(String, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interpreter::expansion::pattern_to_regex;
     use std::collections::HashMap;
 
     fn make_state() -> InterpreterState {
@@ -492,7 +264,6 @@ mod tests {
     #[test]
     fn test_pattern_removal_with_prefix_suffix() {
         let state = make_state();
-        // Pattern "h*o" matches "hello" entirely (h + ell + o), leaving ""
         let regex = pattern_to_regex("h*o", false, false);
         let result = apply_pattern_removal_with_prefix_suffix(
             &state,
@@ -504,8 +275,6 @@ mod tests {
             PatternRemovalSide::Prefix,
             false,
         );
-        // "hello" -> "" (h*o matches "hello"), "world" -> "world", "foo" -> "foo"
-        // With prefix/suffix: ["pre-", "world", "foo-suf"]
         assert_eq!(result.values, vec!["pre-", "world", "foo-suf"]);
     }
 
