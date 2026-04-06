@@ -1,0 +1,20 @@
+[package]
+name = "icloud-bash"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Virtual bash filesystem over iCloud Notes, Reminders, and Hide My Email"
+
+[dependencies]
+icloud-api = { path = "../icloud-api" }
+just-bash = { git = "https://github.com/arthur-zhang/just-bash" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+chrono = "0.4"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

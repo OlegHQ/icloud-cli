@@ -1,0 +1,41 @@
+lockfile_version = 2
+
+[meta]
+name = "icloud-cli"
+version = "0.0.1"
+
+[[packages]]
+module = "github.com/anthropics/claude-plugins-official/plugins/code-simplifier"
+direct = true
+kind = "plugin"
+url = "https://github.com/anthropics/claude-plugins-official/tree/104d39be10b7b1380b2ae23a387a11a297b599c3/plugins/code-simplifier"
+owner = "anthropics"
+repo = "claude-plugins-official"
+path = "plugins/code-simplifier"
+commit = "104d39be10b7b1380b2ae23a387a11a297b599c3"
+cache_key = "717b651d84ecf0b374db84a582794346fcb5a1298d577884bc0cf678114f53fa"
+name = ""
+
+[[packages]]
+module = "github.com/oleghq/agent-configs/plugins/rust-dev"
+direct = true
+kind = "plugin"
+url = "https://github.com/oleghq/agent-configs/tree/85204efc9cc134f705eac9cbeff3d2ef7c839252/plugins/rust-dev"
+owner = "oleghq"
+repo = "agent-configs"
+path = "plugins/rust-dev"
+commit = "85204efc9cc134f705eac9cbeff3d2ef7c839252"
+cache_key = "aaf779e46fd025475c03428bb06ddb857fbfb11b192dc6380a8a33d0214f95c8"
+name = ""
+
+[[packages]]
+module = "github.com/oleghq/agent-configs/plugins/simplifier"
+direct = true
+kind = "plugin"
+url = "https://github.com/oleghq/agent-configs/tree/85204efc9cc134f705eac9cbeff3d2ef7c839252/plugins/simplifier"
+owner = "oleghq"
+repo = "agent-configs"
+path = "plugins/simplifier"
+commit = "85204efc9cc134f705eac9cbeff3d2ef7c839252"
+cache_key = "084247bf21fa15d2a571eef7e9c9ddd4e67c82107b0ccedc866e5d0a37701bf5"
+name = ""

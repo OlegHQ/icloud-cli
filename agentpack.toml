@@ -1,0 +1,10 @@
+# Agentpack project manifest — direct dependencies only. Run `agentpack lock` to refresh pack.lock.
+
+name = "icloud-cli"
+version = "0.0.1"
+
+[dependencies]
+"github.com/oleghq/agent-configs/plugins/simplifier" = {}
+"github.com/oleghq/agent-configs/plugins/rust-dev" = {}
+"github.com/anthropics/claude-plugins-official/plugins/code-simplifier" = {}
+# "github.com/owner/repo/path" = {}

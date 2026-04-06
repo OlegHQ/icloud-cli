@@ -1,0 +1,6 @@
+/target
+references/vendor
+**/*.rs.bk
+.env
+*.session
+.DS_Store
