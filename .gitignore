@@ -4,3 +4,6 @@ references/vendor
 .env
 *.session
 .DS_Store
+.claude
+.cursor
+
