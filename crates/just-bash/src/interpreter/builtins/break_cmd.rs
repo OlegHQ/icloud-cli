@@ -1,6 +1,7 @@
 //! break - Exit from loops builtin
 
-use crate::interpreter::errors::{BreakError, ExitError, InterpreterError, SubshellExitError};
+use crate::interpreter::errors::{BreakError, InterpreterError, SubshellExitError};
+use crate::interpreter::helpers::loop_helpers::parse_loop_levels;
 use crate::interpreter::types::InterpreterState;
 
 /// Result type for builtin commands.
@@ -51,34 +52,7 @@ pub fn handle_break(
         return Ok(BuiltinResult::ok());
     }
 
-    // bash: too many arguments is an error (exit code 1)
-    if args.len() > 1 {
-        return Err(ExitError::new(
-            1,
-            String::new(),
-            "bash: break: too many arguments\n".to_string(),
-        )
-        .into());
-    }
-
-    let mut levels = 1u32;
-    if !args.is_empty() {
-        match args[0].parse::<i32>() {
-            Ok(n) if n >= 1 => {
-                levels = n as u32;
-            }
-            _ => {
-                // Invalid argument causes a fatal error in bash (exit code 128)
-                return Err(ExitError::new(
-                    128,
-                    String::new(),
-                    format!("bash: break: {}: numeric argument required\n", args[0]),
-                )
-                .into());
-            }
-        }
-    }
-
+    let levels = parse_loop_levels("break", args)?;
     Err(BreakError::new(levels, String::new(), String::new()).into())
 }
 

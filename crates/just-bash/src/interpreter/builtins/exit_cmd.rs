@@ -1,6 +1,7 @@
 //! exit - Exit shell builtin
 
 use crate::interpreter::errors::{ExitError, InterpreterError};
+use crate::interpreter::helpers::builtin_args::{parse_numeric_arg, wrap_exit_code};
 use crate::interpreter::types::InterpreterState;
 use std::convert::Infallible;
 
@@ -16,30 +17,10 @@ pub fn handle_exit(
     state: &InterpreterState,
     args: &[String],
 ) -> Result<Infallible, InterpreterError> {
-    let (exit_code, stderr) = if args.is_empty() {
-        // Use last command's exit code when no argument given
-        (state.last_exit_code, String::new())
-    } else {
-        let arg = &args[0];
-        // Empty string or non-numeric is an error
-        if arg.is_empty() || !arg.chars().all(|c| c.is_ascii_digit() || c == '-') {
-            (
-                2,
-                format!("bash: exit: {}: numeric argument required\n", arg),
-            )
-        } else {
-            match arg.parse::<i32>() {
-                Ok(parsed) => {
-                    // Exit codes are modulo 256 (wrap around)
-                    let code = ((parsed % 256) + 256) % 256;
-                    (code, String::new())
-                }
-                Err(_) => (
-                    2,
-                    format!("bash: exit: {}: numeric argument required\n", arg),
-                ),
-            }
-        }
+    let (exit_code, stderr) = match parse_numeric_arg("exit", args) {
+        Ok(None) => (state.last_exit_code, String::new()),
+        Ok(Some(n)) => (wrap_exit_code(n), String::new()),
+        Err(msg) => (2, msg),
     };
 
     Err(ExitError::new(exit_code, String::new(), stderr).into())
