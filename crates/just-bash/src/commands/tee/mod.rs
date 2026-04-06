@@ -65,32 +65,14 @@ impl Command for TeeCommand {
 mod tests {
     use super::*;
     use crate::fs::{FileSystem, InMemoryFs};
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use crate::commands::test_utils::*;
 
     fn make_ctx(args: Vec<&str>, stdin: &str) -> CommandContext {
-        let fs = Arc::new(InMemoryFs::new());
-        CommandContext {
-            args: args.into_iter().map(String::from).collect(),
-            stdin: stdin.into(),
-            cwd: "/".into(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
+        make_ctx_with_stdin(args, stdin)
     }
 
     fn make_ctx_with_fs(args: Vec<&str>, stdin: &str, fs: Arc<InMemoryFs>) -> CommandContext {
-        CommandContext {
-            args: args.into_iter().map(String::from).collect(),
-            stdin: stdin.into(),
-            cwd: "/".into(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
+        make_ctx_with_stdin_and_fs(args, stdin, fs)
     }
 
     #[tokio::test(flavor = "multi_thread")]

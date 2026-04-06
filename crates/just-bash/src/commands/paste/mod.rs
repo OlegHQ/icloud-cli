@@ -126,25 +126,11 @@ impl Command for PasteCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::test_utils::*;
     use crate::fs::types::FileSystem;
-    use crate::fs::InMemoryFs;
-    use std::collections::HashMap;
-    use std::sync::Arc;
 
     async fn make_ctx(args: Vec<&str>, stdin: &str, files: Vec<(&str, &str)>) -> CommandContext {
-        let fs = Arc::new(InMemoryFs::new());
-        for (path, content) in files {
-            fs.write_file(path, content.as_bytes()).await.unwrap();
-        }
-        CommandContext {
-            args: args.into_iter().map(String::from).collect(),
-            stdin: stdin.to_string(),
-            cwd: "/".to_string(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
+        make_ctx_with_stdin_and_files(args, stdin, files).await
     }
 
     #[tokio::test(flavor = "multi_thread")]

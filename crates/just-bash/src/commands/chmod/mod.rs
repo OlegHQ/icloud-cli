@@ -255,24 +255,11 @@ fn parse_mode(mode_str: &str, current_mode: u32) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::{FileSystem, InMemoryFs};
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use crate::commands::test_utils::*;
+    use crate::fs::FileSystem;
 
     async fn make_ctx(args: Vec<&str>, files: Vec<(&str, &str)>) -> CommandContext {
-        let fs = Arc::new(InMemoryFs::new());
-        for (p, c) in files {
-            fs.write_file(p, c.as_bytes()).await.unwrap();
-        }
-        CommandContext {
-            args: args.into_iter().map(String::from).collect(),
-            stdin: String::new(),
-            cwd: "/".into(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
+        crate::commands::test_utils::make_ctx_with_files(args, files).await
     }
 
     #[tokio::test(flavor = "multi_thread")]

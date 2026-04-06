@@ -251,40 +251,22 @@ impl Command for XargsCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::InMemoryFs;
-    use std::collections::HashMap;
+    use crate::commands::test_utils::*;
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::Arc;
 
     fn make_ctx(args: Vec<&str>, stdin: &str) -> CommandContext {
-        let fs = Arc::new(InMemoryFs::new());
-        CommandContext {
-            args: args.into_iter().map(String::from).collect(),
-            stdin: stdin.to_string(),
-            cwd: "/".to_string(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
+        make_ctx_with_stdin(args, stdin)
     }
 
     fn make_ctx_with_exec(args: Vec<&str>, stdin: &str) -> CommandContext {
-        let fs = Arc::new(InMemoryFs::new());
         let exec_fn: crate::commands::types::ExecFn = Arc::new(|cmd, _stdin, _cwd, _env, _fs| {
             Box::pin(async move { CommandResult::success(format!("EXEC: {}\n", cmd)) })
                 as Pin<Box<dyn Future<Output = CommandResult> + Send>>
         });
-        CommandContext {
-            args: args.into_iter().map(String::from).collect(),
-            stdin: stdin.to_string(),
-            cwd: "/".to_string(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: Some(exec_fn),
-            fetch_fn: None,
-        }
+        let mut ctx = make_ctx_with_stdin(args, stdin);
+        ctx.exec_fn = Some(exec_fn);
+        ctx
     }
 
     #[tokio::test(flavor = "multi_thread")]

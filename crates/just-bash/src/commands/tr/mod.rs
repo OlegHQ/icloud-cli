@@ -193,20 +193,10 @@ impl Command for TrCommand {
 mod tests {
     use super::*;
     use crate::fs::InMemoryFs;
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use crate::commands::test_utils::*;
 
     fn make_ctx(args: Vec<&str>, stdin: &str) -> CommandContext {
-        let fs = Arc::new(InMemoryFs::new());
-        CommandContext {
-            args: args.into_iter().map(String::from).collect(),
-            stdin: stdin.to_string(),
-            cwd: "/".to_string(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
+        make_ctx_with_stdin(args, stdin)
     }
 
     #[tokio::test(flavor = "multi_thread")]
