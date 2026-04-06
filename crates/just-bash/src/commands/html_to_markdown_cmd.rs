@@ -1,3 +1,4 @@
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 use regex_lite::Regex;
@@ -24,10 +25,7 @@ impl Command for HtmlToMarkdownCommand {
             match ctx.fs.read_file(&path).await {
                 Ok(c) => c,
                 Err(_) => {
-                    return CommandResult::error(format!(
-                        "html-to-markdown: {}: No such file or directory\n",
-                        ctx.args[0]
-                    ))
+                    return CommandResult::error(no_such_file("html-to-markdown", &ctx.args[0]))
                 }
             }
         };

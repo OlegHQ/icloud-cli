@@ -8,6 +8,7 @@ pub mod types;
 use self::executor::{create_initial_state, execute_commands};
 use self::parser::parse_scripts;
 use self::types::{ExecuteContext, RangeState, SedCmd};
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use crate::fs::FileSystem;
 use async_trait::async_trait;
@@ -180,10 +181,7 @@ impl Command for SedCommand {
                             .await;
                     }
                     Err(_) => {
-                        return CommandResult::error(format!(
-                            "sed: {}: No such file or directory\n",
-                            file
-                        ));
+                        return CommandResult::error(no_such_file("sed", file));
                     }
                 }
             }
@@ -226,10 +224,7 @@ impl Command for SedCommand {
                 match ctx.fs.read_file(&file_path).await {
                     Ok(c) => file_content = c,
                     Err(_) => {
-                        return CommandResult::error(format!(
-                            "sed: {}: No such file or directory\n",
-                            file
-                        ));
+                        return CommandResult::error(no_such_file("sed", file));
                     }
                 }
             }

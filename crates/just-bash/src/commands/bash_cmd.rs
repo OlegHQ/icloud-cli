@@ -1,3 +1,4 @@
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -51,7 +52,7 @@ impl Command for BashCommand {
             Ok(content) => execute_script(&content, script_path, &script_args, &ctx, exec_fn).await,
             Err(_) => CommandResult::with_exit_code(
                 String::new(),
-                format!("bash: {}: No such file or directory\n", script_path),
+                no_such_file("bash", script_path),
                 127,
             ),
         }
@@ -137,7 +138,7 @@ impl Command for ShCommand {
             Ok(content) => execute_script(&content, script_path, &script_args, &ctx, exec_fn).await,
             Err(_) => CommandResult::with_exit_code(
                 String::new(),
-                format!("sh: {}: No such file or directory\n", script_path),
+                no_such_file("sh", script_path),
                 127,
             ),
         }

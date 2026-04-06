@@ -1,3 +1,4 @@
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -228,7 +229,7 @@ impl Command for FoldCommand {
                     Err(_) => {
                         return CommandResult::with_exit_code(
                             output,
-                            format!("fold: {}: No such file or directory\n", file),
+                            no_such_file("fold", file),
                             1,
                         );
                     }

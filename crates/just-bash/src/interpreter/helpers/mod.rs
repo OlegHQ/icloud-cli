@@ -1,6 +1,7 @@
 //! Interpreter helper modules
 
 pub mod array;
+pub mod identifier;
 pub mod condition;
 pub mod error_utils;
 pub mod file_tests;
@@ -25,6 +26,7 @@ pub mod xtrace;
 
 pub use array::*;
 pub use condition::*;
+pub use identifier::*;
 pub use error_utils::*;
 pub use file_tests::*;
 pub use ifs::*;

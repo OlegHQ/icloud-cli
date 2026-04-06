@@ -13,20 +13,8 @@
 //! Returns 0 if option found, 1 if end of options or error.
 
 use super::break_cmd::BuiltinResult;
+use crate::interpreter::helpers::identifier::is_valid_identifier;
 use crate::interpreter::types::InterpreterState;
-
-/// Check if a string is a valid variable name.
-fn is_valid_var_name(name: &str) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
 
 /// Handle the getopts builtin command.
 ///
@@ -49,7 +37,7 @@ pub fn handle_getopts(state: &mut InterpreterState, args: &[String]) -> BuiltinR
     let var_name = &args[1];
 
     // Check if variable name is valid
-    let invalid_var_name = !is_valid_var_name(var_name);
+    let invalid_var_name = !is_valid_identifier(var_name);
 
     // Determine if silent mode (optstring starts with ':')
     let silent_mode = optstring.starts_with(':');

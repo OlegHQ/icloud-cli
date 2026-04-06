@@ -1,4 +1,5 @@
 // src/commands/nl/mod.rs
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -167,10 +168,7 @@ impl Command for NlCommand {
                     match ctx.fs.read_file(&path).await {
                         Ok(content) => inputs.push(content),
                         Err(_) => {
-                            return CommandResult::error(format!(
-                                "nl: {}: No such file or directory\n",
-                                file
-                            ));
+                            return CommandResult::error(no_such_file("nl", file));
                         }
                     }
                 }

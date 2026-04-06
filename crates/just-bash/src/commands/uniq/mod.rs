@@ -1,4 +1,5 @@
 // src/commands/uniq/mod.rs
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -49,10 +50,7 @@ impl Command for UniqCommand {
             match ctx.fs.read_file(&path).await {
                 Ok(c) => c,
                 Err(_) => {
-                    return CommandResult::error(format!(
-                        "uniq: {}: No such file or directory\n",
-                        files[0]
-                    ));
+                    return CommandResult::error(no_such_file("uniq", &files[0]));
                 }
             }
         };

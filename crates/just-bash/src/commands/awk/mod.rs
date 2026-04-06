@@ -15,6 +15,7 @@ use self::context::AwkContext;
 use self::interpreter::AwkInterpreter;
 use self::parser::parse;
 use self::types::AwkPattern;
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -213,10 +214,7 @@ impl Command for AwkCommand {
                             });
                         }
                         Err(_) => {
-                            return CommandResult::error(format!(
-                                "awk: {}: No such file or directory\n",
-                                file
-                            ));
+                            return CommandResult::error(no_such_file("awk", file));
                         }
                     }
                 }

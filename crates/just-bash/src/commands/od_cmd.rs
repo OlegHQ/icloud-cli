@@ -1,3 +1,4 @@
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -109,10 +110,7 @@ impl Command for OdCommand {
             match ctx.fs.read_file(&path).await {
                 Ok(content) => content,
                 Err(_) => {
-                    return CommandResult::error(format!(
-                        "od: {}: No such file or directory\n",
-                        files[0]
-                    ));
+                    return CommandResult::error(no_such_file("od", &files[0]));
                 }
             }
         } else {

@@ -1,4 +1,5 @@
 // src/commands/tee/mod.rs
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -50,7 +51,7 @@ impl Command for TeeCommand {
                 ctx.fs.write_file(&file_path, content.as_bytes()).await
             };
             if result.is_err() {
-                stderr.push_str(&format!("tee: {}: No such file or directory\n", file));
+                stderr.push_str(&no_such_file("tee", file));
                 exit_code = 1;
             }
         }

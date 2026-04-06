@@ -1,4 +1,5 @@
 // src/commands/utils/head_tail.rs
+use crate::commands::errors::no_such_file;
 use crate::commands::{CommandContext, CommandResult};
 
 #[derive(Debug, Clone)]
@@ -134,10 +135,7 @@ where
                 files_processed += 1;
             }
             Err(_) => {
-                stderr.push_str(&format!(
-                    "{}: {}: No such file or directory\n",
-                    cmd_name, file
-                ));
+                stderr.push_str(&no_such_file(cmd_name, file));
                 exit_code = 1;
             }
         }

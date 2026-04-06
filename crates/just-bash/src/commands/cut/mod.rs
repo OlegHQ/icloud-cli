@@ -1,4 +1,5 @@
 // src/commands/cut/mod.rs
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -198,10 +199,7 @@ impl Command for CutCommand {
             match ctx.fs.read_file(&path).await {
                 Ok(c) => c,
                 Err(_) => {
-                    return CommandResult::error(format!(
-                        "cut: {}: No such file or directory\n",
-                        files[0]
-                    ));
+                    return CommandResult::error(no_such_file("cut", &files[0]));
                 }
             }
         };

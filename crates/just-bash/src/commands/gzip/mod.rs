@@ -1,4 +1,5 @@
 // src/commands/gzip/mod.rs
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use crate::fs::types::RmOptions;
 use async_trait::async_trait;
@@ -330,10 +331,7 @@ fn process_file<'a>(
                 }
             }
             Err(_) => {
-                return GzipResult::err(format!(
-                    "{}: {}: No such file or directory\n",
-                    cmd_name, file
-                ));
+                return GzipResult::err(no_such_file(cmd_name, file));
             }
         }
 
@@ -341,10 +339,7 @@ fn process_file<'a>(
         let input_data = match ctx.fs.read_file_buffer(&input_path).await {
             Ok(data) => data,
             Err(_) => {
-                return GzipResult::err(format!(
-                    "{}: {}: No such file or directory\n",
-                    cmd_name, file
-                ));
+                return GzipResult::err(no_such_file(cmd_name, file));
             }
         };
 
@@ -521,10 +516,7 @@ async fn process_directory(
     let entries = match ctx.fs.readdir_with_file_types(dir_path).await {
         Ok(e) => e,
         Err(_) => {
-            return GzipResult::err(format!(
-                "{}: {}: No such file or directory\n",
-                cmd_name, dir_path
-            ))
+            return GzipResult::err(no_such_file(cmd_name, dir_path))
         }
     };
 
@@ -593,10 +585,7 @@ async fn list_file(
         match ctx.fs.read_file_buffer(&input_path).await {
             Ok(data) => data,
             Err(_) => {
-                return GzipResult::err(format!(
-                    "{}: {}: No such file or directory\n",
-                    cmd_name, file
-                ));
+                return GzipResult::err(no_such_file(cmd_name, file));
             }
         }
     };
@@ -645,10 +634,7 @@ async fn test_file(
         match ctx.fs.read_file_buffer(&input_path).await {
             Ok(data) => data,
             Err(_) => {
-                return GzipResult::err(format!(
-                    "{}: {}: No such file or directory\n",
-                    cmd_name, file
-                ));
+                return GzipResult::err(no_such_file(cmd_name, file));
             }
         }
     };

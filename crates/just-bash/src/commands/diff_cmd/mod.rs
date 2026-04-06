@@ -1,4 +1,5 @@
 // src/commands/diff_cmd/mod.rs
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 use similar::{ChangeTag, TextDiff};
@@ -64,7 +65,7 @@ impl Command for DiffCommand {
                 Err(_) => {
                     return CommandResult::with_exit_code(
                         String::new(),
-                        format!("diff: {}: No such file or directory\n", f1),
+                        no_such_file("diff", f1),
                         2,
                     );
                 }
@@ -81,7 +82,7 @@ impl Command for DiffCommand {
                 Err(_) => {
                     return CommandResult::with_exit_code(
                         String::new(),
-                        format!("diff: {}: No such file or directory\n", f2),
+                        no_such_file("diff", f2),
                         2,
                     );
                 }

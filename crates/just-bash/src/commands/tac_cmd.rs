@@ -1,3 +1,4 @@
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -20,10 +21,7 @@ impl Command for TacCommand {
             match ctx.fs.read_file(&file_path).await {
                 Ok(content) => content,
                 Err(_) => {
-                    return CommandResult::error(format!(
-                        "tac: {}: No such file or directory\n",
-                        ctx.args[0]
-                    ));
+                    return CommandResult::error(no_such_file("tac", &ctx.args[0]));
                 }
             }
         } else {

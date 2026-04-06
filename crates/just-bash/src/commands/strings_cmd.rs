@@ -1,3 +1,4 @@
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -178,7 +179,7 @@ impl Command for StringsCommand {
                         Err(_) => {
                             return CommandResult::with_exit_code(
                                 output,
-                                format!("strings: {}: No such file or directory\n", file),
+                                no_such_file("strings", file),
                                 1,
                             );
                         }

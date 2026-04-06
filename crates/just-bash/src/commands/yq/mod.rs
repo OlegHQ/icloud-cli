@@ -1,3 +1,4 @@
+use crate::commands::errors::no_such_file;
 use crate::commands::jaq_support::{
     collect_inputs, compile_filter, format_values, last_truthy, run_filter,
 };
@@ -259,7 +260,7 @@ async fn load_sources(
             Err(_) => {
                 return Err(CommandResult::with_exit_code(
                     String::new(),
-                    format!("yq: {file}: No such file or directory\n"),
+                    no_such_file("yq", file),
                     2,
                 ));
             }

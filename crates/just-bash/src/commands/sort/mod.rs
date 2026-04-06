@@ -1,6 +1,7 @@
 // src/commands/sort/mod.rs
 pub mod comparator;
 
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 use comparator::{create_comparator, parse_key_spec, SortOptions};
@@ -172,10 +173,7 @@ impl Command for SortCommand {
             match ctx.fs.read_file(&path).await {
                 Ok(c) => c,
                 Err(_) => {
-                    return CommandResult::error(format!(
-                        "sort: {}: No such file or directory\n",
-                        files[0]
-                    ));
+                    return CommandResult::error(no_such_file("sort", &files[0]));
                 }
             }
         };

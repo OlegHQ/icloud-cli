@@ -5,6 +5,7 @@ pub mod types;
 use std::collections::VecDeque;
 use std::time::SystemTime;
 
+use crate::commands::errors::no_such_file;
 use crate::commands::types::{Command, CommandContext, CommandResult};
 use crate::fs::RmOptions;
 use async_trait::async_trait;
@@ -68,10 +69,7 @@ impl Command for FindCommand {
 
             // Check if path exists
             if !ctx.fs.exists(&base_path).await {
-                all_stderr.push_str(&format!(
-                    "find: {}: No such file or directory\n",
-                    search_path_clean
-                ));
+                all_stderr.push_str(&no_such_file("find", search_path_clean));
                 exit_code = 1;
                 continue;
             }

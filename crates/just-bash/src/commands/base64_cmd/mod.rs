@@ -1,4 +1,5 @@
 // src/commands/base64_cmd/mod.rs
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD;
@@ -24,10 +25,7 @@ async fn read_input(ctx: &CommandContext, files: &[String]) -> Result<Vec<u8>, C
         match ctx.fs.read_file_buffer(&path).await {
             Ok(data) => result.extend_from_slice(&data),
             Err(_) => {
-                return Err(CommandResult::error(format!(
-                    "base64: {}: No such file or directory\n",
-                    file
-                )));
+                return Err(CommandResult::error(no_such_file("base64", file)));
             }
         }
     }

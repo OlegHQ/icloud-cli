@@ -1,4 +1,5 @@
 // src/commands/split_cmd/mod.rs
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 use regex_lite::Regex;
@@ -252,7 +253,7 @@ impl Command for SplitCommand {
                 Err(_) => {
                     return CommandResult::with_exit_code(
                         "".into(),
-                        format!("split: {}: No such file or directory\n", input_file),
+                        no_such_file("split", input_file),
                         1,
                     )
                 }

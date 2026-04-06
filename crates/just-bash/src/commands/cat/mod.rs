@@ -1,4 +1,5 @@
 // src/commands/cat/mod.rs
+use crate::commands::vfs_helpers::read_file_accumulate_errors;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -49,14 +50,18 @@ impl Command for CatCommand {
             let content = if file == "-" {
                 ctx.stdin.clone()
             } else {
-                let path = ctx.fs.resolve_path(&ctx.cwd, file);
-                match ctx.fs.read_file(&path).await {
-                    Ok(c) => c,
-                    Err(_) => {
-                        stderr.push_str(&format!("cat: {}: No such file or directory\n", file));
-                        exit_code = 1;
-                        continue;
-                    }
+                match read_file_accumulate_errors(
+                    ctx.fs.as_ref(),
+                    &ctx.cwd,
+                    "cat",
+                    file,
+                    &mut stderr,
+                    &mut exit_code,
+                )
+                .await
+                {
+                    Some(c) => c,
+                    None => continue,
                 }
             };
 

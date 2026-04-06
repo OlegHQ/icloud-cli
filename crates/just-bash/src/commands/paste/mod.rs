@@ -1,4 +1,5 @@
 // src/commands/paste/mod.rs
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -75,10 +76,7 @@ impl Command for PasteCommand {
                 match ctx.fs.read_file(&path).await {
                     Ok(c) => file_contents.push(c),
                     Err(_) => {
-                        return CommandResult::error(format!(
-                            "paste: {}: No such file or directory\n",
-                            file
-                        ));
+                        return CommandResult::error(no_such_file("paste", file));
                     }
                 }
             }

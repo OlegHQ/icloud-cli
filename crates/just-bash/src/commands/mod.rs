@@ -1,5 +1,7 @@
 // src/commands/mod.rs
 pub mod alias_cmd;
+pub mod errors;
+pub mod vfs_helpers;
 pub mod awk;
 pub mod base64_cmd;
 pub mod basename;

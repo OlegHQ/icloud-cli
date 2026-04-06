@@ -1,3 +1,4 @@
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -88,7 +89,7 @@ async fn read_input(ctx: &CommandContext, args: &[String]) -> Result<String, Com
         }
         let path = ctx.fs.resolve_path(&ctx.cwd, file);
         ctx.fs.read_file(&path).await.map_err(|_| {
-            CommandResult::error(format!("xan: {}: No such file or directory\n", file))
+            CommandResult::error(no_such_file("xan", file))
         })
     } else {
         Ok(ctx.stdin.clone())

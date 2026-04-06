@@ -1,3 +1,4 @@
+use crate::commands::errors::no_such_file;
 use crate::commands::jaq_support::{
     collect_inputs, compile_filter, format_values, last_truthy, run_filter,
 };
@@ -125,7 +126,7 @@ async fn load_inputs(ctx: &CommandContext, files: &[String]) -> Result<Vec<Strin
             Err(_) => {
                 return Err(CommandResult::with_exit_code(
                     String::new(),
-                    format!("jq: {file}: No such file or directory\n"),
+                    no_such_file("jq", file),
                     2,
                 ));
             }

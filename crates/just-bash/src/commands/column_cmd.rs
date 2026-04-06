@@ -1,3 +1,4 @@
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -167,10 +168,7 @@ impl Command for ColumnCommand {
                     match ctx.fs.read_file(&path).await {
                         Ok(c) => parts.push(c),
                         Err(_) => {
-                            return CommandResult::error(format!(
-                                "column: {}: No such file or directory\n",
-                                file
-                            ));
+                            return CommandResult::error(no_such_file("column", file));
                         }
                     }
                 }

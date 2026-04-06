@@ -1,5 +1,6 @@
 // src/commands/md5sum/mod.rs
 // md5sum, sha1sum, sha256sum — checksum commands
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 use digest::Digest;
@@ -79,7 +80,7 @@ async fn checksum_execute(
                 None => {
                     return CommandResult::with_exit_code(
                         "".into(),
-                        format!("{}: {}: No such file or directory\n", name, file),
+                        no_such_file(name, file),
                         1,
                     )
                 }
@@ -148,7 +149,7 @@ async fn checksum_execute(
         };
         match data {
             None => {
-                output.push_str(&format!("{}: {}: No such file or directory\n", name, file));
+                output.push_str(&no_such_file(name, file));
                 exit_code = 1;
             }
             Some(data) => {

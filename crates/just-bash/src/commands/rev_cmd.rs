@@ -1,3 +1,4 @@
+use crate::commands::errors::no_such_file;
 use crate::commands::{Command, CommandContext, CommandResult};
 use async_trait::async_trait;
 
@@ -71,7 +72,7 @@ impl Command for RevCommand {
                         Err(_) => {
                             return CommandResult::with_exit_code(
                                 output,
-                                format!("rev: {}: No such file or directory\n", file),
+                                no_such_file("rev", file),
                                 1,
                             );
                         }
