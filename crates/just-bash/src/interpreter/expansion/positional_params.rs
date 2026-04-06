@@ -6,10 +6,11 @@
 //! - "${@#pattern}" - pattern removal (strip)
 //! - "$@" and "$*" with adjacent text
 
-use crate::interpreter::expansion::{apply_pattern_removal, pattern_to_regex, PatternRemovalSide};
-use crate::interpreter::helpers::get_ifs_separator;
+use crate::interpreter::expansion::{
+    apply_pattern_removal, apply_pattern_replacement_to_slice, format_element_list,
+    slice_elements, PatternRemovalSide,
+};
 use crate::interpreter::InterpreterState;
-use regex_lite::Regex;
 
 /// Result type for positional parameter expansion handlers.
 #[derive(Debug, Clone)]
@@ -18,14 +19,18 @@ pub struct PositionalExpansionResult {
     pub quoted: bool,
 }
 
+impl PositionalExpansionResult {
+    fn new(values: Vec<String>) -> Self {
+        Self { values, quoted: true }
+    }
+}
+
 /// Get positional parameters from state
 pub fn get_positional_params(state: &InterpreterState) -> Vec<String> {
     let num_params: i32 = state.env.get("#").and_then(|s| s.parse().ok()).unwrap_or(0);
-    let mut params = Vec::new();
-    for i in 1..=num_params {
-        params.push(state.env.get(&i.to_string()).cloned().unwrap_or_default());
-    }
-    params
+    (1..=num_params)
+        .map(|i| state.env.get(&i.to_string()).cloned().unwrap_or_default())
+        .collect()
 }
 
 /// Apply positional parameter slicing.
@@ -38,109 +43,26 @@ pub fn apply_positional_slicing(
     offset: i64,
     length: Option<i64>,
 ) -> PositionalExpansionResult {
-    // Get positional parameters
-    let num_params: i32 = state.env.get("#").and_then(|s| s.parse().ok()).unwrap_or(0);
-    let mut all_params = Vec::new();
-    for i in 1..=num_params {
-        all_params.push(state.env.get(&i.to_string()).cloned().unwrap_or_default());
-    }
+    let all_params = get_positional_params(state);
 
-    let shell_name = state
-        .env
-        .get("0")
-        .cloned()
-        .unwrap_or_else(|| "bash".to_string());
-
-    // Build sliced params array
     let sliced_params: Vec<String> = if offset <= 0 {
         // offset 0: include $0 at position 0
+        let shell_name = state.env.get("0").cloned().unwrap_or_else(|| "bash".to_string());
         let mut with_zero = vec![shell_name];
-        with_zero.extend(all_params.clone());
+        with_zero.extend(all_params);
 
         let computed_idx = with_zero.len() as i64 + offset;
-        // If negative offset goes beyond array bounds, return empty
         if computed_idx < 0 {
             vec![]
         } else {
             let start_idx = if offset < 0 { computed_idx as usize } else { 0 };
-            if let Some(len) = length {
-                let end_idx = if len < 0 {
-                    (with_zero.len() as i64 + len) as usize
-                } else {
-                    start_idx + len as usize
-                };
-                with_zero[start_idx..end_idx.max(start_idx).min(with_zero.len())].to_vec()
-            } else {
-                with_zero[start_idx..].to_vec()
-            }
+            slice_elements(&with_zero, start_idx as i64, length)
         }
     } else {
-        // offset > 0: start from $<offset>
-        let start_idx = (offset - 1) as usize;
-        if start_idx >= all_params.len() {
-            vec![]
-        } else if let Some(len) = length {
-            let end_idx = if len < 0 {
-                (all_params.len() as i64 + len) as usize
-            } else {
-                start_idx + len as usize
-            };
-            all_params[start_idx..end_idx.max(start_idx).min(all_params.len())].to_vec()
-        } else {
-            all_params[start_idx..].to_vec()
-        }
+        slice_elements(&all_params, offset - 1, length)
     };
 
-    if sliced_params.is_empty() {
-        // No params after slicing -> prefix + suffix as one word
-        let combined = format!("{}{}", prefix, suffix);
-        return PositionalExpansionResult {
-            values: if combined.is_empty() {
-                vec![]
-            } else {
-                vec![combined]
-            },
-            quoted: true,
-        };
-    }
-
-    if is_star {
-        // "${*:offset}" - join all sliced params with IFS into one word
-        let ifs_sep = get_ifs_separator(&state.env);
-        return PositionalExpansionResult {
-            values: vec![format!(
-                "{}{}{}",
-                prefix,
-                sliced_params.join(ifs_sep),
-                suffix
-            )],
-            quoted: true,
-        };
-    }
-
-    // "${@:offset}" - each sliced param is a separate word
-    if sliced_params.len() == 1 {
-        return PositionalExpansionResult {
-            values: vec![format!("{}{}{}", prefix, sliced_params[0], suffix)],
-            quoted: true,
-        };
-    }
-
-    let mut result = Vec::with_capacity(sliced_params.len());
-    result.push(format!("{}{}", prefix, sliced_params[0]));
-    for p in &sliced_params[1..sliced_params.len() - 1] {
-        result.push(p.clone());
-    }
-    result.push(format!(
-        "{}{}",
-        sliced_params[sliced_params.len() - 1],
-        suffix
-    ));
-
-    PositionalExpansionResult {
-        values: result,
-        quoted: true,
-    }
+    PositionalExpansionResult::new(format_element_list(sliced_params, is_star, prefix, suffix, &state.env))
 }
 
 /// Apply pattern replacement to positional parameters.
@@ -157,80 +79,10 @@ pub fn apply_positional_pattern_replacement(
     anchor_end: bool,
 ) -> PositionalExpansionResult {
     let params = get_positional_params(state);
-
-    if params.is_empty() {
-        let combined = format!("{}{}", prefix, suffix);
-        return PositionalExpansionResult {
-            values: if combined.is_empty() {
-                vec![]
-            } else {
-                vec![combined]
-            },
-            quoted: true,
-        };
-    }
-
-    // Apply anchor modifiers
-    let final_pattern = if anchor_start {
-        format!("^{}", regex_pattern)
-    } else if anchor_end {
-        format!("{}$", regex_pattern)
-    } else {
-        regex_pattern.to_string()
-    };
-
-    // Apply replacement to each param
-    let replaced_params: Vec<String> = match Regex::new(&final_pattern) {
-        Ok(re) => params
-            .iter()
-            .map(|param| {
-                if replace_all {
-                    re.replace_all(param, replacement).to_string()
-                } else {
-                    re.replace(param, replacement).to_string()
-                }
-            })
-            .collect(),
-        Err(_) => params,
-    };
-
-    if is_star {
-        // "${*/...}" - join all params with IFS into one word
-        let ifs_sep = get_ifs_separator(&state.env);
-        return PositionalExpansionResult {
-            values: vec![format!(
-                "{}{}{}",
-                prefix,
-                replaced_params.join(ifs_sep),
-                suffix
-            )],
-            quoted: true,
-        };
-    }
-
-    // "${@/...}" - each param is a separate word
-    if replaced_params.len() == 1 {
-        return PositionalExpansionResult {
-            values: vec![format!("{}{}{}", prefix, replaced_params[0], suffix)],
-            quoted: true,
-        };
-    }
-
-    let mut result = Vec::with_capacity(replaced_params.len());
-    result.push(format!("{}{}", prefix, replaced_params[0]));
-    for p in &replaced_params[1..replaced_params.len() - 1] {
-        result.push(p.clone());
-    }
-    result.push(format!(
-        "{}{}",
-        replaced_params[replaced_params.len() - 1],
-        suffix
-    ));
-
-    PositionalExpansionResult {
-        values: result,
-        quoted: true,
-    }
+    let replaced = apply_pattern_replacement_to_slice(
+        &params, regex_pattern, replacement, replace_all, anchor_start, anchor_end,
+    );
+    PositionalExpansionResult::new(format_element_list(replaced, is_star, prefix, suffix, &state.env))
 }
 
 /// Apply pattern removal to positional parameters.
@@ -245,68 +97,14 @@ pub fn apply_positional_pattern_removal(
     greedy: bool,
 ) -> PositionalExpansionResult {
     let params = get_positional_params(state);
-
-    if params.is_empty() {
-        let combined = format!("{}{}", prefix, suffix);
-        return PositionalExpansionResult {
-            values: if combined.is_empty() {
-                vec![]
-            } else {
-                vec![combined]
-            },
-            quoted: true,
-        };
-    }
-
-    // Apply pattern removal to each param
-    let stripped_params: Vec<String> = params
+    let stripped: Vec<String> = params
         .iter()
-        .map(|param| apply_pattern_removal(param, regex_str, side, greedy))
+        .map(|p| apply_pattern_removal(p, regex_str, side, greedy))
         .collect();
-
-    if is_star {
-        // "${*#...}" - join all params with IFS into one word
-        let ifs_sep = get_ifs_separator(&state.env);
-        return PositionalExpansionResult {
-            values: vec![format!(
-                "{}{}{}",
-                prefix,
-                stripped_params.join(ifs_sep),
-                suffix
-            )],
-            quoted: true,
-        };
-    }
-
-    // "${@#...}" - each param is a separate word
-    if stripped_params.len() == 1 {
-        return PositionalExpansionResult {
-            values: vec![format!("{}{}{}", prefix, stripped_params[0], suffix)],
-            quoted: true,
-        };
-    }
-
-    let mut result = Vec::with_capacity(stripped_params.len());
-    result.push(format!("{}{}", prefix, stripped_params[0]));
-    for p in &stripped_params[1..stripped_params.len() - 1] {
-        result.push(p.clone());
-    }
-    result.push(format!(
-        "{}{}",
-        stripped_params[stripped_params.len() - 1],
-        suffix
-    ));
-
-    PositionalExpansionResult {
-        values: result,
-        quoted: true,
-    }
+    PositionalExpansionResult::new(format_element_list(stripped, is_star, prefix, suffix, &state.env))
 }
 
 /// Handle simple "$@" and "$*" expansion with prefix/suffix.
-/// "$@": Each positional parameter becomes a separate word, with prefix joined to first
-///       and suffix joined to last. If no params, produces nothing (or just prefix+suffix if present)
-/// "$*": All params joined with IFS as ONE word. If no params, produces one empty word.
 pub fn apply_simple_positional_expansion(
     state: &InterpreterState,
     is_star: bool,
@@ -316,65 +114,26 @@ pub fn apply_simple_positional_expansion(
     let num_params: i32 = state.env.get("#").and_then(|s| s.parse().ok()).unwrap_or(0);
 
     if num_params == 0 {
-        if is_star {
-            // "$*" with no params -> one empty word (prefix + suffix)
-            return PositionalExpansionResult {
-                values: vec![format!("{}{}", prefix, suffix)],
-                quoted: true,
-            };
-        }
+        // "$*" with no params -> one empty word (prefix + suffix)
         // "$@" with no params -> no words (unless there's prefix/suffix)
         let combined = format!("{}{}", prefix, suffix);
-        return PositionalExpansionResult {
-            values: if combined.is_empty() {
-                vec![]
-            } else {
-                vec![combined]
-            },
-            quoted: true,
+        return if is_star {
+            PositionalExpansionResult::new(vec![combined])
+        } else if combined.is_empty() {
+            PositionalExpansionResult::new(vec![])
+        } else {
+            PositionalExpansionResult::new(vec![combined])
         };
     }
 
-    // Get individual positional parameters
-    let mut params = Vec::new();
-    for i in 1..=num_params {
-        params.push(state.env.get(&i.to_string()).cloned().unwrap_or_default());
-    }
-
-    if is_star {
-        // "$*" - join all params with IFS into one word
-        let ifs_sep = get_ifs_separator(&state.env);
-        return PositionalExpansionResult {
-            values: vec![format!("{}{}{}", prefix, params.join(ifs_sep), suffix)],
-            quoted: true,
-        };
-    }
-
-    // "$@" - each param is a separate word
-    // Join prefix with first, suffix with last
-    if params.len() == 1 {
-        return PositionalExpansionResult {
-            values: vec![format!("{}{}{}", prefix, params[0], suffix)],
-            quoted: true,
-        };
-    }
-
-    let mut result = Vec::with_capacity(params.len());
-    result.push(format!("{}{}", prefix, params[0]));
-    for p in &params[1..params.len() - 1] {
-        result.push(p.clone());
-    }
-    result.push(format!("{}{}", params[params.len() - 1], suffix));
-
-    PositionalExpansionResult {
-        values: result,
-        quoted: true,
-    }
+    let params = get_positional_params(state);
+    PositionalExpansionResult::new(format_element_list(params, is_star, prefix, suffix, &state.env))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interpreter::expansion::pattern_to_regex;
     use std::collections::HashMap;
 
     fn make_state_with_params(params: &[&str]) -> InterpreterState {
@@ -429,7 +188,6 @@ mod tests {
     fn test_slicing_offset_positive() {
         let state = make_state_with_params(&["a", "b", "c", "d"]);
         let result = apply_positional_slicing(&state, false, "", "", 2, None);
-        // offset 2 means start from $2, which is "b"
         assert_eq!(result.values, vec!["b", "c", "d"]);
     }
 
@@ -444,7 +202,6 @@ mod tests {
     fn test_slicing_offset_zero() {
         let state = make_state_with_params(&["a", "b", "c"]);
         let result = apply_positional_slicing(&state, false, "", "", 0, Some(2));
-        // offset 0 includes $0 (bash), so result is ["bash", "a"]
         assert_eq!(result.values, vec!["bash", "a"]);
     }
 
