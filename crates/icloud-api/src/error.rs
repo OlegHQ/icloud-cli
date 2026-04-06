@@ -53,20 +53,19 @@ impl Error {
             Error::Session(msg) if msg.contains("keychain") => {
                 Some("Run `icloud login` with `--secrets file` or fix keychain access.".into())
             }
-            Error::Api { status: 401 | 403, .. } | Error::Auth(_) => {
-                Some("Session may have expired; run `icloud login` again.".into())
+            Error::Api {
+                status: 401 | 403, ..
             }
-            Error::Reminders(msg) if msg.contains("schema") || msg.contains("incomplete") => {
-                Some("Remove the reminders DB file and run `icloud reminders sync` (or `sync --force`).".into())
-            }
+            | Error::Auth(_) => Some("Session may have expired; run `icloud login` again.".into()),
+            Error::Reminders(msg) if msg.contains("schema") || msg.contains("incomplete") => Some(
+                "Remove the reminders DB file and run `icloud reminders sync` (or `sync --force`)."
+                    .into(),
+            ),
             _ => None,
         };
         let (kind, message) = match self {
             Error::Http(e) => ("http", e.to_string()),
-            Error::Api { status, body } => (
-                "api",
-                format!("HTTP {status}: {body}"),
-            ),
+            Error::Api { status, body } => ("api", format!("HTTP {status}: {body}")),
             Error::Json(e) => ("json", e.to_string()),
             Error::Auth(m) => ("auth", m.clone()),
             Error::Session(m) => ("session", m.clone()),

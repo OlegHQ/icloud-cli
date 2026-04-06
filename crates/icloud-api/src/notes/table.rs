@@ -132,11 +132,11 @@ fn decode_mergeable_data(buf: &[u8]) -> Result<TableData> {
 
     // Build the row-major grid from column-major cell order
     let mut grid = vec![vec![String::new(); num_cols]; num_rows];
-    for col in 0..num_cols {
-        for row in 0..num_rows {
+    for (row, row_cells) in grid.iter_mut().enumerate() {
+        for (col, cell) in row_cells.iter_mut().enumerate() {
             let idx = col * num_rows + row;
             if idx < cell_texts.len() {
-                grid[row][col] = cell_texts[idx].clone();
+                *cell = cell_texts[idx].clone();
             }
         }
     }
@@ -327,10 +327,7 @@ fn encode_mergeable_data(table: &TableData) -> Vec<u8> {
     {
         let inner = {
             let mut x = Vec::new();
-            x.extend_from_slice(&field_bytes(
-                1,
-                &[0x08, 0x00, 0x10, 0x01, 0x18, 0x00],
-            ));
+            x.extend_from_slice(&field_bytes(1, &[0x08, 0x00, 0x10, 0x01, 0x18, 0x00]));
             x
         };
         ops.push(field_bytes(1, &inner));
@@ -340,43 +337,31 @@ fn encode_mergeable_data(table: &TableData) -> Vec<u8> {
     // Sets up initial type mappings and references
     {
         let mut obj = field_varint(1, 4); // type index = 4 (com.apple.notes.CRTable pair at index 4,5)
-        // Identity: zero-filled UUID (32 hex chars)
+                                          // Identity: zero-filled UUID (32 hex chars)
         let identity = format!(" {}", "0".repeat(32));
-        obj.extend_from_slice(&field_bytes(
-            3,
-            &{
-                let mut e = field_varint(1, 0);
-                e.extend_from_slice(&field_bytes(2, identity.as_bytes()));
-                e
-            },
-        ));
+        obj.extend_from_slice(&field_bytes(3, &{
+            let mut e = field_varint(1, 0);
+            e.extend_from_slice(&field_bytes(2, identity.as_bytes()));
+            e
+        }));
         // crTableColumnDirection (key index 1): value 1 (left-to-right)
-        obj.extend_from_slice(&field_bytes(
-            3,
-            &{
-                let mut e = field_varint(1, 1);
-                e.extend_from_slice(&field_bytes(2, &field_varint(6, 1)));
-                e
-            },
-        ));
+        obj.extend_from_slice(&field_bytes(3, &{
+            let mut e = field_varint(1, 1);
+            e.extend_from_slice(&field_bytes(2, &field_varint(6, 1)));
+            e
+        }));
         // crRows (key index 3)
-        obj.extend_from_slice(&field_bytes(
-            3,
-            &{
-                let mut e = field_varint(1, 3);
-                e.extend_from_slice(&field_bytes(2, &field_varint(6, 8)));
-                e
-            },
-        ));
+        obj.extend_from_slice(&field_bytes(3, &{
+            let mut e = field_varint(1, 3);
+            e.extend_from_slice(&field_bytes(2, &field_varint(6, 8)));
+            e
+        }));
         // crColumns (key index 5)
-        obj.extend_from_slice(&field_bytes(
-            3,
-            &{
-                let mut e = field_varint(1, 5);
-                e.extend_from_slice(&field_bytes(2, &field_varint(6, 13)));
-                e
-            },
-        ));
+        obj.extend_from_slice(&field_bytes(3, &{
+            let mut e = field_varint(1, 5);
+            e.extend_from_slice(&field_bytes(2, &field_varint(6, 13)));
+            e
+        }));
         ops.push(field_bytes(13, &obj));
     }
 
@@ -391,46 +376,29 @@ fn encode_mergeable_data(table: &TableData) -> Vec<u8> {
     // Op 3: CRTableColumnDirection (field 13)
     {
         let mut obj = field_varint(1, 1); // type index 1
-        obj.extend_from_slice(&field_bytes(
-            3,
-            &{
-                let mut e = field_varint(1, 2);
-                e.extend_from_slice(&field_bytes(
-                    2,
-                    b"\"!CRTableColumnDirectionLeftToRight",
-                ));
-                e
-            },
-        ));
+        obj.extend_from_slice(&field_bytes(3, &{
+            let mut e = field_varint(1, 2);
+            e.extend_from_slice(&field_bytes(2, b"\"!CRTableColumnDirectionLeftToRight"));
+            e
+        }));
         ops.push(field_bytes(13, &obj));
     }
 
     // Column containers (field 16) — one per column
-    for col in 0..num_cols {
-        let container = build_column_container(
-            num_rows,
-            &cell_uuid_indices[col],
-            &row_uuid_indices,
-            &col_doc_uuids[col],
-        );
+    for (col_indices, col_doc) in cell_uuid_indices.iter().zip(col_doc_uuids.iter()) {
+        let container = build_column_container(num_rows, col_indices, &row_uuid_indices, col_doc);
         ops.push(field_bytes(16, &container));
     }
 
     // Cell object registrations (field 13) — register each cell as type 2
-    for col in 0..num_cols {
-        for row in 0..num_rows {
+    for col_indices in &cell_uuid_indices {
+        for (_, &cell_idx) in col_indices.iter().enumerate().take(num_rows) {
             let mut obj = field_varint(1, 2); // type for cell reference
-            obj.extend_from_slice(&field_bytes(
-                3,
-                &{
-                    let mut e = field_varint(1, 4); // key index 4 = UUIDIndex
-                    e.extend_from_slice(&field_bytes(
-                        2,
-                        &field_varint(2, cell_uuid_indices[col][row] as u64),
-                    ));
-                    e
-                },
-            ));
+            obj.extend_from_slice(&field_bytes(3, &{
+                let mut e = field_varint(1, 4); // key index 4 = UUIDIndex
+                e.extend_from_slice(&field_bytes(2, &field_varint(2, cell_idx as u64)));
+                e
+            }));
             ops.push(field_bytes(13, &obj));
         }
     }
@@ -438,16 +406,13 @@ fn encode_mergeable_data(table: &TableData) -> Vec<u8> {
     // Row CRDT list entries (field 6) — register rows
     {
         let mut list = Vec::new();
-        for i in 0..num_rows {
+        for (_, &row_idx) in row_uuid_indices.iter().enumerate().take(num_rows) {
             let mut entry = Vec::new();
             entry.extend_from_slice(&field_bytes(
                 1,
                 &field_varint(6, col_uuid_indices.first().copied().unwrap_or(0) as u64),
             ));
-            entry.extend_from_slice(&field_bytes(
-                2,
-                &field_varint(6, row_uuid_indices[i] as u64),
-            ));
+            entry.extend_from_slice(&field_bytes(2, &field_varint(6, row_idx as u64)));
             entry.extend_from_slice(&field_bytes(
                 3,
                 &field_bytes(1, &[0x08, 0x00, 0x10, 0x01, 0x18, 0x00]),
@@ -460,16 +425,13 @@ fn encode_mergeable_data(table: &TableData) -> Vec<u8> {
     // Column CRDT list entries (field 6) — register columns
     {
         let mut list = Vec::new();
-        for i in 0..num_cols {
+        for (_, &col_idx) in col_uuid_indices.iter().enumerate().take(num_cols) {
             let mut entry = Vec::new();
             entry.extend_from_slice(&field_bytes(
                 1,
                 &field_varint(6, row_uuid_indices.first().copied().unwrap_or(0) as u64),
             ));
-            entry.extend_from_slice(&field_bytes(
-                2,
-                &field_varint(6, col_uuid_indices[i] as u64),
-            ));
+            entry.extend_from_slice(&field_bytes(2, &field_varint(6, col_idx as u64)));
             entry.extend_from_slice(&field_bytes(
                 3,
                 &field_bytes(1, &[0x08, 0x00, 0x10, 0x01, 0x18, 0x00]),

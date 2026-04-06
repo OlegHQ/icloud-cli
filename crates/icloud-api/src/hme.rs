@@ -147,7 +147,8 @@ impl HideMyEmailClient {
     }
 
     pub async fn deactivate(&self, anonymous_id: &str) -> Result<bool> {
-        self.post_id_action("/v1/hme/deactivate", anonymous_id).await
+        self.post_id_action("/v1/hme/deactivate", anonymous_id)
+            .await
     }
 
     pub async fn delete_alias(&self, anonymous_id: &str) -> Result<bool> {
@@ -177,4 +178,3 @@ impl HideMyEmailClient {
         Ok(v["success"].as_bool().unwrap_or(false))
     }
 }
-

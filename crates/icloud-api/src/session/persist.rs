@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::error::{Error, Result};
 use super::{SessionCookie, SessionData};
+use crate::error::{Error, Result};
 
 /// Non-sensitive fields written to the session path when using [`SecretsBackend::Keychain`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,10 +120,9 @@ pub fn save_session(path: &Path, data: &SessionData, backend: SecretsBackend) ->
     match backend {
         SecretsBackend::File => SessionData::save(data, path),
         SecretsBackend::Keychain => {
-            let apple_id = data
-                .apple_id
-                .clone()
-                .ok_or_else(|| Error::Session("keychain mode requires apple_id on session (re-login)".into()))?;
+            let apple_id = data.apple_id.clone().ok_or_else(|| {
+                Error::Session("keychain mode requires apple_id on session (re-login)".into())
+            })?;
             let public = SessionPublic::from_session(data, apple_id.clone());
             let secrets = SessionSecrets::from_session(data);
             if let Some(parent) = path.parent() {

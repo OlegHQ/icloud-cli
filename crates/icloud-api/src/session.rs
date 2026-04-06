@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-pub use persist::{
-    load_session, save_session, SecretsBackend, SessionPublic, SessionSecrets,
-};
+pub use persist::{load_session, save_session, SecretsBackend, SessionPublic, SessionSecrets};
 
 /// Persisted authentication state — compatible with
 /// [tarekbecker/icloud-reminders-cli](https://github.com/tarekbecker/icloud-reminders-cli) `session.json`
@@ -60,8 +58,7 @@ impl SessionData {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| Error::Session(e.to_string()))?;
         }
-        let data =
-            serde_json::to_string_pretty(self).map_err(|e| Error::Session(e.to_string()))?;
+        let data = serde_json::to_string_pretty(self).map_err(|e| Error::Session(e.to_string()))?;
         std::fs::write(path, data).map_err(|e| Error::Session(e.to_string()))?;
         #[cfg(unix)]
         {

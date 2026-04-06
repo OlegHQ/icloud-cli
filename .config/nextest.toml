@@ -1,0 +1,7 @@
+[profile.default]
+fail-fast = false
+failure-output = "immediate-final"
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[profile.default.junit]
+path = "target/nextest/default.xml"

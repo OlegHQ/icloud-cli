@@ -110,7 +110,10 @@ pub fn to_markdown_with_attachments(
                 if para_runs.last().is_none_or(|&(_, r)| !std::ptr::eq(r, run)) {
                     // Find the last valid char boundary at or before byte_in_para - 1
                     let offset = byte_in_para.saturating_sub(1);
-                    let offset = (0..=offset).rev().find(|&i| para.is_char_boundary(i)).unwrap_or(0);
+                    let offset = (0..=offset)
+                        .rev()
+                        .find(|&i| para.is_char_boundary(i))
+                        .unwrap_or(0);
                     // Only push if offset is after the last entry (don't shadow earlier runs)
                     let last_offset = para_runs.last().map_or(0, |&(o, _)| o);
                     if offset < para.len() && offset > last_offset {
@@ -229,7 +232,7 @@ fn emit_paragraph(
 /// If >50% of the paragraph has a non-Body style, use that style.
 /// Otherwise default to Body. Handles CRDT drift where a Monospaced or
 /// blockquote run bleeds a few chars into an adjacent Body paragraph.
-fn dominant_para_style<'a>(para: &str, runs: &[(usize, &'a AttributeRun)]) -> ParagraphStyle {
+fn dominant_para_style(para: &str, runs: &[(usize, &AttributeRun)]) -> ParagraphStyle {
     let para_len = para.len();
     if para_len == 0 || runs.is_empty() {
         return ParagraphStyle::default();
@@ -249,9 +252,10 @@ fn dominant_para_style<'a>(para: &str, runs: &[(usize, &'a AttributeRun)]) -> Pa
             run.style.checklist.as_ref(),
             run.style.indent,
         );
-        if let Some(entry) = style_bytes.iter_mut().find(|e| {
-            e.0 == key.0 && e.1 == key.1 && e.3 == key.3
-        }) {
+        if let Some(entry) = style_bytes
+            .iter_mut()
+            .find(|e| e.0 == key.0 && e.1 == key.1 && e.3 == key.3)
+        {
             entry.4 += span;
         } else {
             style_bytes.push((key.0, key.1, key.2, key.3, span));
@@ -395,7 +399,11 @@ fn emit_inline(
 
     // Fall back to per-span rendering (for paragraphs with genuine mixed formatting).
     for (i, &(start, run)) in runs.iter().enumerate() {
-        let end = if i + 1 < runs.len() { runs[i + 1].0 } else { para.len() };
+        let end = if i + 1 < runs.len() {
+            runs[i + 1].0
+        } else {
+            para.len()
+        };
         let start = start.min(para.len());
         let end = end.min(para.len());
         let span = &para[start..end];
@@ -660,9 +668,11 @@ fn parse_pipe_table(lines: &[&str]) -> Option<TableData> {
 fn is_separator_line(line: &str) -> bool {
     let stripped = line.trim().trim_matches('|');
     !stripped.is_empty()
-        && stripped
-            .split('|')
-            .all(|cell| cell.trim().chars().all(|c| c == '-' || c == ':' || c == ' '))
+        && stripped.split('|').all(|cell| {
+            cell.trim()
+                .chars()
+                .all(|c| c == '-' || c == ':' || c == ' ')
+        })
 }
 
 fn parse_line_prefix(line: &str, is_first: bool) -> (&str, ParagraphStyle) {
@@ -710,7 +720,9 @@ fn parse_line_prefix(line: &str, is_first: bool) -> (&str, ParagraphStyle) {
     }
 
     // Checklist
-    if let Some(rest) = trimmed.strip_prefix("- [x] ").or_else(|| trimmed.strip_prefix("- [X] "))
+    if let Some(rest) = trimmed
+        .strip_prefix("- [x] ")
+        .or_else(|| trimmed.strip_prefix("- [X] "))
     {
         return (
             rest,
@@ -761,7 +773,10 @@ fn parse_line_prefix(line: &str, is_first: bool) -> (&str, ParagraphStyle) {
     }
 
     // Bullet list
-    if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+    if let Some(rest) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+    {
         return (
             rest,
             ParagraphStyle {
@@ -810,10 +825,10 @@ fn parse_line_inline(content: &str, style: &ParagraphStyle) -> Vec<(String, Attr
     let mut underline = false;
 
     let flush = |results: &mut Vec<(String, AttributeRun)>,
-                     text: &mut String,
-                     font: FontWeight,
-                     strike: bool,
-                     underline: bool| {
+                 text: &mut String,
+                 font: FontWeight,
+                 strike: bool,
+                 underline: bool| {
         if !text.is_empty() {
             results.push((
                 std::mem::take(text),
@@ -1037,14 +1052,20 @@ mod tests {
                 },
                 AttributeRun {
                     length: 11, // " does stuff\n" — bold
-                    font: FontWeight { bold: true, italic: false },
+                    font: FontWeight {
+                        bold: true,
+                        italic: false,
+                    },
                     ..Default::default()
                 },
             ],
         };
         let md = to_markdown(&doc);
         // Should NOT produce "git bise**ct does stuff**" (mid-word marker)
-        assert!(!md.contains("bise**ct"), "bold marker landed mid-word: {md}");
+        assert!(
+            !md.contains("bise**ct"),
+            "bold marker landed mid-word: {md}"
+        );
     }
 
     #[test]
@@ -1055,12 +1076,18 @@ mod tests {
             runs: vec![
                 AttributeRun {
                     length: 5, // "hello"
-                    font: FontWeight { bold: true, italic: false },
+                    font: FontWeight {
+                        bold: true,
+                        italic: false,
+                    },
                     ..Default::default()
                 },
                 AttributeRun {
                     length: 7, // " world\n"
-                    font: FontWeight { bold: true, italic: false },
+                    font: FontWeight {
+                        bold: true,
+                        italic: false,
+                    },
                     ..Default::default()
                 },
             ],
@@ -1110,10 +1137,7 @@ mod tests {
             ],
         };
         let mut attachments = HashMap::new();
-        attachments.insert(
-            "test-uuid".to_string(),
-            AttachmentContent::Table(table),
-        );
+        attachments.insert("test-uuid".to_string(), AttachmentContent::Table(table));
 
         let doc = NoteDocument {
             text: "Title\n\u{FFFC}\n".to_string(),

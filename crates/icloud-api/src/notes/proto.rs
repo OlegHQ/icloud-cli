@@ -43,8 +43,8 @@ pub fn decode_proto(buf: &[u8]) -> Result<NoteDocument> {
     let document = proto_get_bytes(buf, 2)
         .ok_or_else(|| Error::Notes("missing NoteStoreProto.document".into()))?;
     // Document.note (field 3)
-    let note = proto_get_bytes(document, 3)
-        .ok_or_else(|| Error::Notes("missing Document.note".into()))?;
+    let note =
+        proto_get_bytes(document, 3).ok_or_else(|| Error::Notes("missing Document.note".into()))?;
     // Note.note_text (field 2)
     let text = proto_get_string(note, 2).unwrap_or_default();
     // Note.attribute_run (field 5, repeated)
@@ -61,21 +61,29 @@ fn dump_raw_fields(buf: &[u8]) -> Vec<(u32, u8, String)> {
     let mut fields = Vec::new();
     let mut pos = 0;
     while pos < buf.len() {
-        let Some((tag, n)) = crate::title_doc::decode_varint(&buf[pos..]) else { break };
+        let Some((tag, n)) = crate::title_doc::decode_varint(&buf[pos..]) else {
+            break;
+        };
         pos += n;
         let wire_type = (tag & 0x07) as u8;
         let field_num = (tag >> 3) as u32;
         match wire_type {
             0 => {
-                let Some((val, n)) = crate::title_doc::decode_varint(&buf[pos..]) else { break };
+                let Some((val, n)) = crate::title_doc::decode_varint(&buf[pos..]) else {
+                    break;
+                };
                 pos += n;
                 fields.push((field_num, wire_type, format!("varint={val}")));
             }
             2 => {
-                let Some((len, n)) = crate::title_doc::decode_varint(&buf[pos..]) else { break };
+                let Some((len, n)) = crate::title_doc::decode_varint(&buf[pos..]) else {
+                    break;
+                };
                 pos += n;
                 let len = len as usize;
-                if pos + len > buf.len() { break; }
+                if pos + len > buf.len() {
+                    break;
+                }
                 let data = &buf[pos..pos + len];
                 let repr = if let Ok(s) = std::str::from_utf8(data) {
                     format!("str={s:?}")
@@ -85,8 +93,14 @@ fn dump_raw_fields(buf: &[u8]) -> Vec<(u32, u8, String)> {
                 fields.push((field_num, wire_type, repr));
                 pos += len;
             }
-            1 => { pos += 8; fields.push((field_num, wire_type, "fixed64".into())); }
-            5 => { pos += 4; fields.push((field_num, wire_type, "fixed32".into())); }
+            1 => {
+                pos += 8;
+                fields.push((field_num, wire_type, "fixed64".into()));
+            }
+            5 => {
+                pos += 4;
+                fields.push((field_num, wire_type, "fixed32".into()));
+            }
             _ => break,
         }
     }
@@ -100,7 +114,12 @@ pub fn debug_dump(b64: &str) -> Result<String> {
     let mut char_offset = 0;
     for (i, run) in doc.runs.iter().enumerate() {
         let end = char_offset + run.length;
-        let text_slice: String = doc.text.chars().skip(char_offset).take(run.length).collect();
+        let text_slice: String = doc
+            .text
+            .chars()
+            .skip(char_offset)
+            .take(run.length)
+            .collect();
         let preview: String = text_slice.chars().take(50).collect();
         let preview = preview.replace('\n', "\\n");
         out.push_str(&format!(
@@ -116,11 +135,16 @@ pub fn debug_dump(b64: &str) -> Result<String> {
         ));
         char_offset = end;
     }
-    out.push_str(&format!("\nTotal chars in text: {}\n", doc.text.chars().count()));
+    out.push_str(&format!(
+        "\nTotal chars in text: {}\n",
+        doc.text.chars().count()
+    ));
     out.push_str(&format!("Total chars in runs: {char_offset}\n"));
 
     // Dump raw fields for ALL runs, plus paragraph_style sub-fields
-    let raw = B64.decode(b64).map_err(|e| crate::error::Error::Notes(format!("base64: {e}")))?;
+    let raw = B64
+        .decode(b64)
+        .map_err(|e| crate::error::Error::Notes(format!("base64: {e}")))?;
     let decompressed = decompress(&raw);
     if let Some(document) = proto_get_bytes(&decompressed, 2) {
         if let Some(note) = proto_get_bytes(document, 3) {
@@ -433,8 +457,16 @@ mod tests {
         };
         let our_proto = encode_proto(&doc);
 
-        eprintln!("WEB ({} bytes): {}", web_proto.len(), hex::encode(&web_proto));
-        eprintln!("OUR ({} bytes): {}", our_proto.len(), hex::encode(&our_proto));
+        eprintln!(
+            "WEB ({} bytes): {}",
+            web_proto.len(),
+            hex::encode(&web_proto)
+        );
+        eprintln!(
+            "OUR ({} bytes): {}",
+            our_proto.len(),
+            hex::encode(&our_proto)
+        );
 
         // Both should decode back to the same text
         let web_doc = decode_proto(&web_proto).unwrap();

@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/icloud-api", "crates/icloud-cli", "crates/icloud-bash"]
+members = [
+    "crates/icloud-api",
+    "crates/icloud-cli",
+    "crates/icloud-bash",
+    "crates/just-bash",
+]
 
 [workspace.package]
 version = "0.1.0"

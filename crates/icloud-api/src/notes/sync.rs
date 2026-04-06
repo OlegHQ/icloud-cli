@@ -2,7 +2,9 @@
 
 use serde_json::Value;
 
-use crate::cloudkit::{ck_field_int, ck_field_ref, ck_field_timestamp, ensure_owner_id, CloudKitClient};
+use crate::cloudkit::{
+    ck_field_int, ck_field_ref, ck_field_timestamp, ensure_owner_id, CloudKitClient,
+};
 use crate::error::Result;
 use crate::title_doc::ts_to_str;
 
@@ -47,7 +49,15 @@ impl NotesSyncEngine {
         let owner_id = self.owner_id().await?;
         let old_token = self.cache.sync_token.clone();
         let mut token = self.cache.sync_token.clone();
-        let records = self.ck.sync_zone_changes(&mut token, SYNC_DESIRED_KEYS, Some(SYNC_RECORD_TYPES), &owner_id).await?;
+        let records = self
+            .ck
+            .sync_zone_changes(
+                &mut token,
+                SYNC_DESIRED_KEYS,
+                Some(SYNC_RECORD_TYPES),
+                &owner_id,
+            )
+            .await?;
         if token != old_token {
             self.cache.ds.dirty = true;
         }
@@ -74,15 +84,23 @@ impl NotesSyncEngine {
     /// Fetch all fields of a note record (for debugging).
     pub async fn fetch_raw(&mut self, record_name: &str) -> Result<serde_json::Value> {
         let owner = self.owner_id().await?;
-        self.ck.lookup_records(
-            &owner,
-            &[record_name],
-            &[
-                "TitleEncrypted", "SnippetEncrypted", "TextDataEncrypted",
-                "ModificationDate", "Deleted", "Folder", "ParentFolder",
-                "Attachments", "MinimumSupportedNotesVersion",
-            ],
-        ).await
+        self.ck
+            .lookup_records(
+                &owner,
+                &[record_name],
+                &[
+                    "TitleEncrypted",
+                    "SnippetEncrypted",
+                    "TextDataEncrypted",
+                    "ModificationDate",
+                    "Deleted",
+                    "Folder",
+                    "ParentFolder",
+                    "Attachments",
+                    "MinimumSupportedNotesVersion",
+                ],
+            )
+            .await
     }
 
     /// Fetch the full body of a note and return it as Markdown.
@@ -214,14 +232,8 @@ impl NotesSyncEngine {
             let Some(map) = rec.as_object() else {
                 continue;
             };
-            let record_name = map
-                .get("recordName")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let record_type = map
-                .get("recordType")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let record_name = map.get("recordName").and_then(|v| v.as_str()).unwrap_or("");
+            let record_type = map.get("recordType").and_then(|v| v.as_str()).unwrap_or("");
             let deleted = map
                 .get("deleted")
                 .and_then(|v| v.as_bool())
@@ -241,9 +253,7 @@ impl NotesSyncEngine {
                     } else {
                         let title = field_b64_text(&fields, "TitleEncrypted");
                         if !title.is_empty() {
-                            self.cache
-                                .folders
-                                .insert(record_name.to_string(), title);
+                            self.cache.folders.insert(record_name.to_string(), title);
                             self.cache.ds.name_changed(record_name.to_string());
                         }
                         if let Some(parent) = ck_field_ref(&fields, "ParentFolder") {

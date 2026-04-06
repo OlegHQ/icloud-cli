@@ -6,6 +6,7 @@ pub mod hme;
 pub mod http;
 pub mod notes;
 pub mod reminders;
+pub mod retry;
 pub mod session;
 pub mod store;
 pub mod title_doc;
@@ -14,7 +15,8 @@ pub use auth::{AuthFlow, TrustedPhone, TwoFactorInfo};
 pub use cloudkit::CloudKitClient;
 pub use error::{Error, JsonErrorReport, Result};
 pub use hme::HideMyEmailClient;
-pub use notes::{NoteDocument, NotesSyncEngine, NotesStore};
+pub use notes::{NoteDocument, NotesStore, NotesSyncEngine};
+pub use retry::{is_cloudkit_retryable, with_notes_retry, with_reminders_retry};
 pub use session::{SessionCookie, SessionData};
 pub use store::is_cache_fresh;
 

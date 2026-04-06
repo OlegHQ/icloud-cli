@@ -1,6 +1,8 @@
 use serde_json::Value;
 
-use crate::cloudkit::{ck_field_int, ck_field_int64, ck_field_ref, ck_field_string, ensure_owner_id, CloudKitClient};
+use crate::cloudkit::{
+    ck_field_int, ck_field_int64, ck_field_ref, ck_field_string, ensure_owner_id, CloudKitClient,
+};
 use crate::error::Result;
 use crate::title_doc::{extract_title, ts_to_str};
 
@@ -8,7 +10,9 @@ use crate::title_doc::{extract_title, ts_to_str};
 fn decode_name_or_title(raw_name: &str, fields: &serde_json::Map<String, Value>) -> String {
     if !raw_name.is_empty() {
         // Try base64 decode (bytes field)
-        if let Ok(bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_name) {
+        if let Ok(bytes) =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_name)
+        {
             if let Ok(s) = std::str::from_utf8(&bytes) {
                 let s = s.trim();
                 if !s.is_empty() {
@@ -45,12 +49,23 @@ impl SyncEngine {
         }
         let owner_id = self.owner_id().await?;
         const KEYS: &[&str] = &[
-            "TitleDocument", "NotesDocument", "Name", "Completed",
-            "CompletionDate", "DueDate", "List", "Deleted", "Priority", "ParentReminder",
+            "TitleDocument",
+            "NotesDocument",
+            "Name",
+            "Completed",
+            "CompletionDate",
+            "DueDate",
+            "List",
+            "Deleted",
+            "Priority",
+            "ParentReminder",
         ];
         let old_token = self.cache.sync_token.clone();
         let mut token = self.cache.sync_token.clone();
-        let records = self.ck.sync_zone_changes(&mut token, KEYS, None, &owner_id).await?;
+        let records = self
+            .ck
+            .sync_zone_changes(&mut token, KEYS, None, &owner_id)
+            .await?;
         if token != old_token {
             self.cache.ds.dirty = true;
         }
@@ -102,15 +117,12 @@ impl SyncEngine {
     fn process_records(&mut self, records: Vec<Value>) {
         for rec in records {
             let Some(map) = rec.as_object() else { continue };
-            let record_name = map
-                .get("recordName")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let record_type = map
-                .get("recordType")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let mut deleted = map.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false);
+            let record_name = map.get("recordName").and_then(|v| v.as_str()).unwrap_or("");
+            let record_type = map.get("recordType").and_then(|v| v.as_str()).unwrap_or("");
+            let mut deleted = map
+                .get("deleted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let fields = map
                 .get("fields")
                 .and_then(|v| v.as_object())
@@ -145,7 +157,8 @@ impl SyncEngine {
                             title = "(untitled)".into();
                         }
                         let due = ck_field_int64(&fields, "DueDate").and_then(ts_to_str);
-                        let completion = ck_field_int64(&fields, "CompletionDate").and_then(ts_to_str);
+                        let completion =
+                            ck_field_int64(&fields, "CompletionDate").and_then(ts_to_str);
                         let list_ref = ck_field_ref(&fields, "List");
                         let parent_ref = ck_field_ref(&fields, "ParentReminder");
                         let notes_raw = extract_title(&ck_field_string(&fields, "NotesDocument"));

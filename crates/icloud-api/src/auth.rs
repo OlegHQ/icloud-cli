@@ -237,9 +237,7 @@ impl AuthFlow {
         let body = json!({"accountName": self.username, "rememberMe": true});
         let resp = self
             .client
-            .post(format!(
-                "{AUTH_ENDPOINT}/federate?isRememberMeEnabled=true"
-            ))
+            .post(format!("{AUTH_ENDPOINT}/federate?isRememberMeEnabled=true"))
             .headers(self.apple_auth_headers())
             .json(&body)
             .send()
@@ -346,9 +344,7 @@ impl AuthFlow {
         let body = json!({"securityCode": {"code": code.trim()}});
         let resp = self
             .client
-            .post(format!(
-                "{AUTH_ENDPOINT}/verify/trusteddevice/securitycode"
-            ))
+            .post(format!("{AUTH_ENDPOINT}/verify/trusteddevice/securitycode"))
             .headers(self.apple_auth_headers())
             .json(&body)
             .send()
@@ -385,9 +381,7 @@ impl AuthFlow {
         };
 
         let no_trusted = v["noTrustedDevices"].as_bool().unwrap_or(true);
-        let code_length = pnv["securityCode"]["length"]
-            .as_u64()
-            .unwrap_or(6) as u32;
+        let code_length = pnv["securityCode"]["length"].as_u64().unwrap_or(6) as u32;
         let phones: Vec<TrustedPhone> = pnv["trustedPhoneNumbers"]
             .as_array()
             .map(|arr| {
@@ -503,15 +497,21 @@ impl AuthFlow {
                 let _ = h.insert("x-apple-id-session-id", v);
             }
         }
-        h.insert("x-requested-with", HeaderValue::from_static("XMLHttpRequest"));
+        h.insert(
+            "x-requested-with",
+            HeaderValue::from_static("XMLHttpRequest"),
+        );
         h.insert("content-type", HeaderValue::from_static("application/json"));
         h.insert("accept", HeaderValue::from_static("application/json"));
-        h.insert("referer", HeaderValue::from_static("https://idmsa.apple.com/"));
-        h.insert("origin", HeaderValue::from_static("https://idmsa.apple.com"));
         h.insert(
-            "x-apple-widget-key",
-            HeaderValue::from_static(WIDGET_KEY),
+            "referer",
+            HeaderValue::from_static("https://idmsa.apple.com/"),
         );
+        h.insert(
+            "origin",
+            HeaderValue::from_static("https://idmsa.apple.com"),
+        );
+        h.insert("x-apple-widget-key", HeaderValue::from_static(WIDGET_KEY));
         h.insert("x-apple-i-require-ue", HeaderValue::from_static("true"));
         if !self.auth_attr.is_empty() {
             if let Ok(v) = HeaderValue::from_str(&self.auth_attr) {
@@ -524,8 +524,14 @@ impl AuthFlow {
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
             ),
         );
-        h.insert("x-apple-mandate-security-upgrade", HeaderValue::from_static("0"));
-        h.insert("x-apple-oauth-client-id", HeaderValue::from_static(WIDGET_KEY));
+        h.insert(
+            "x-apple-mandate-security-upgrade",
+            HeaderValue::from_static("0"),
+        );
+        h.insert(
+            "x-apple-oauth-client-id",
+            HeaderValue::from_static(WIDGET_KEY),
+        );
         h.insert(
             "x-apple-oauth-client-type",
             HeaderValue::from_static("firstPartyAuth"),
@@ -550,7 +556,10 @@ impl AuthFlow {
             let _ = h.insert("x-apple-oauth-state", v.clone());
             let _ = h.insert("x-apple-frame-id", v);
         }
-        h.insert("x-apple-offer-security-upgrade", HeaderValue::from_static("1"));
+        h.insert(
+            "x-apple-offer-security-upgrade",
+            HeaderValue::from_static("1"),
+        );
         h.insert(
             reqwest::header::HeaderName::from_static("x-apple-i-fd-client-info"),
             HeaderValue::from_static(
@@ -640,4 +649,3 @@ fn base64_decode(s: &str) -> Result<Vec<u8>> {
         .decode(s)
         .map_err(|e| Error::Auth(format!("base64: {e}")))
 }
-

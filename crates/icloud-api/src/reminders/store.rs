@@ -1,7 +1,7 @@
 //! Reminders store — thin type alias over the generic RedbStore.
 
-use crate::store::RedbStore;
 use super::cache::RemindersCache;
+use crate::store::RedbStore;
 
 pub type RemindersStore = RedbStore<RemindersCache>;
 
@@ -18,7 +18,7 @@ mod tests {
         let mut c = RemindersCache::default();
         c.ds.dirty = true;
         c.ds.full_rewrite = true;
-        store.save_cache(&c).unwrap();
+        store.save_cache(&mut c).unwrap();
         let c2 = store.load_cache().unwrap();
         assert!(c2.reminders.is_empty());
         assert!(c2.lists.is_empty());
@@ -35,7 +35,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        store.save_cache(&c).unwrap();
+        store.save_cache(&mut c).unwrap();
         let c2 = store.load_cache().unwrap();
         assert_eq!(c2.lists.get("L1").unwrap(), "Groceries");
         assert_eq!(c2.sync_token.as_deref(), Some("tok"));

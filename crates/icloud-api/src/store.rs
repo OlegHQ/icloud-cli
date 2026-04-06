@@ -106,8 +106,22 @@ pub trait StoreCache: Default {
     fn ds(&self) -> &DirtyState;
     fn ds_mut(&mut self) -> &mut DirtyState;
 
-    fn is_dirty(&self) -> bool { self.ds().dirty }
-    fn mark_dirty(&mut self) { self.ds_mut().dirty = true; }
+    /// Sync token snapshot from the last `load_cache` (used for cross-process save merge).
+    fn loaded_disk_sync_token(&self) -> Option<&str> {
+        None
+    }
+    fn set_loaded_disk_sync_token(&mut self, _t: Option<String>) {}
+
+    fn after_load_from_disk(&mut self) {
+        self.set_loaded_disk_sync_token(self.sync_token().map(|s| s.to_string()));
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.ds().dirty
+    }
+    fn mark_dirty(&mut self) {
+        self.ds_mut().dirty = true;
+    }
 
     /// Extract the display title from an item (for search/find).
     fn item_title(item: &Self::Item) -> &str;
@@ -141,6 +155,24 @@ pub trait StoreCache: Default {
     }
 }
 
+fn merge_sync_token_for_save<C: StoreCache>(
+    cache: &C,
+    full_rewrite: bool,
+    db_token_on_disk: Option<&str>,
+) -> Option<String> {
+    if full_rewrite {
+        return cache.sync_token().map(|s| s.to_string());
+    }
+    match (
+        cache.sync_token(),
+        db_token_on_disk,
+        cache.loaded_disk_sync_token(),
+    ) {
+        (Some(mem), Some(db), Some(loaded)) if mem == loaded && mem != db => Some(db.to_string()),
+        _ => cache.sync_token().map(|s| s.to_string()),
+    }
+}
+
 /// On-disk database + companion `.redb.lock` for cross-process exclusion.
 #[derive(Debug, Clone)]
 pub struct RedbStore<C: StoreCache> {
@@ -153,7 +185,11 @@ impl<C: StoreCache> RedbStore<C> {
     pub fn new(db_path: impl Into<PathBuf>) -> Self {
         let db_path = db_path.into();
         let lock_path = db_path.with_extension("redb.lock");
-        Self { db_path, lock_path, _marker: std::marker::PhantomData }
+        Self {
+            db_path,
+            lock_path,
+            _marker: std::marker::PhantomData,
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -183,7 +219,27 @@ impl<C: StoreCache> RedbStore<C> {
             .write(true)
             .open(&self.lock_path)
             .map_err(|e| self.wrap(format!("lock file: {e}")))?;
-        lock.lock_exclusive().map_err(|e| self.wrap(format!("lock exclusive: {e}")))?;
+        lock.lock_exclusive()
+            .map_err(|e| self.wrap(format!("lock exclusive: {e}")))?;
+        let out = (|| {
+            let db = self.open_db()?;
+            f(&db)
+        })();
+        lock.unlock().ok();
+        out
+    }
+
+    /// Shared read lock — multiple processes can load concurrently.
+    pub fn with_lock_shared<R>(&self, f: impl FnOnce(&Database) -> Result<R>) -> Result<R> {
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&self.lock_path)
+            .map_err(|e| self.wrap(format!("lock file: {e}")))?;
+        lock.lock_shared()
+            .map_err(|e| self.wrap(format!("lock shared: {e}")))?;
         let out = (|| {
             let db = self.open_db()?;
             f(&db)
@@ -199,7 +255,7 @@ impl<C: StoreCache> RedbStore<C> {
         let items_name = C::items_table();
         let missing_is_empty = C::missing_version_is_empty();
 
-        self.with_lock(|db| {
+        self.with_lock_shared(|db| {
             let read = db
                 .begin_read()
                 .map_err(|e| crate::error::Error::from_label(label, format!("redb read txn: {e}")))?;
@@ -207,7 +263,11 @@ impl<C: StoreCache> RedbStore<C> {
             let meta_def: TableDefinition<&str, &str> = TableDefinition::new(meta_name);
             let meta = match read.open_table(meta_def) {
                 Ok(t) => t,
-                Err(e) if is_missing_table(&e) => return Ok(C::default()),
+                Err(e) if is_missing_table(&e) => {
+                    let mut c = C::default();
+                    c.after_load_from_disk();
+                    return Ok(c);
+                }
                 Err(e) => return Err(crate::error::Error::from_label(label, format!("meta table: {e}"))),
             };
 
@@ -215,7 +275,11 @@ impl<C: StoreCache> RedbStore<C> {
                 .get(KEY_SCHEMA_VERSION)
                 .map_err(|e| crate::error::Error::from_label(label, format!("meta get schema: {e}")))?;
             let ver: String = match schema_cell {
-                None if missing_is_empty => return Ok(C::default()),
+                None if missing_is_empty => {
+                    let mut c = C::default();
+                    c.after_load_from_disk();
+                    return Ok(c);
+                }
                 None => return Err(crate::error::Error::from_label(
                     label,
                     format!("{label} database is incomplete (missing schema_version); delete the database file and run `icloud {label} sync` again"),
@@ -275,6 +339,7 @@ impl<C: StoreCache> RedbStore<C> {
                 Err(e) => return Err(crate::error::Error::from_label(label, format!("{items_name}: {e}"))),
             }
 
+            cache.after_load_from_disk();
             Ok(cache)
         })
     }
@@ -282,11 +347,11 @@ impl<C: StoreCache> RedbStore<C> {
     /// Persist cache to disk. Uses incremental writes when possible — only
     /// changed/deleted items are touched. Falls back to a full rewrite when
     /// `ds.full_rewrite` is set (force sync / first run).
-    pub fn save_cache(&self, cache: &C) -> Result<()> {
-        let ds = cache.ds();
-        if !ds.dirty {
+    pub fn save_cache(&self, cache: &mut C) -> Result<()> {
+        if !cache.ds().dirty {
             return Ok(());
         }
+        let ds = cache.ds().clone();
 
         let label = C::label();
         let meta_name = C::meta_table();
@@ -295,39 +360,83 @@ impl<C: StoreCache> RedbStore<C> {
         let full = ds.full_rewrite;
 
         self.with_lock(|db| {
-            let write = db
-                .begin_write()
-                .map_err(|e| crate::error::Error::from_label(label, format!("redb write txn: {e}")))?;
+            let write = db.begin_write().map_err(|e| {
+                crate::error::Error::from_label(label, format!("redb write txn: {e}"))
+            })?;
+
+            let meta_def: TableDefinition<&str, &str> = TableDefinition::new(meta_name);
+            let mut meta_table = write
+                .open_table(meta_def)
+                .map_err(|e| crate::error::Error::from_label(label, format!("meta: {e}")))?;
+            let db_token_on_disk = meta_table
+                .get(KEY_SYNC_TOKEN)
+                .map_err(|e| {
+                    crate::error::Error::from_label(label, format!("meta get sync_token: {e}"))
+                })?
+                .map(|v| v.value().to_string());
+            let token_to_write =
+                merge_sync_token_for_save(&*cache, full, db_token_on_disk.as_deref());
 
             // Meta — always written in full (tiny, ~5 keys)
             {
-                let meta_def: TableDefinition<&str, &str> = TableDefinition::new(meta_name);
-                let mut t = write.open_table(meta_def).map_err(|e| crate::error::Error::from_label(label, format!("meta: {e}")))?;
-                t.insert(KEY_SCHEMA_VERSION, EXPECTED_SCHEMA).map_err(|e| crate::error::Error::from_label(label, format!("meta schema: {e}")))?;
-                match cache.sync_token() {
-                    Some(s) => { t.insert(KEY_SYNC_TOKEN, s).map_err(|e| crate::error::Error::from_label(label, format!("meta sync_token: {e}")))?; }
-                    None => { t.remove(KEY_SYNC_TOKEN).ok(); }
+                let t = &mut meta_table;
+                t.insert(KEY_SCHEMA_VERSION, EXPECTED_SCHEMA).map_err(|e| {
+                    crate::error::Error::from_label(label, format!("meta schema: {e}"))
+                })?;
+                match &token_to_write {
+                    Some(s) => {
+                        t.insert(KEY_SYNC_TOKEN, s.as_str()).map_err(|e| {
+                            crate::error::Error::from_label(label, format!("meta sync_token: {e}"))
+                        })?;
+                    }
+                    None => {
+                        t.remove(KEY_SYNC_TOKEN).ok();
+                    }
                 }
                 match cache.owner_id() {
-                    Some(s) => { t.insert(KEY_OWNER_ID, s).map_err(|e| crate::error::Error::from_label(label, format!("meta owner: {e}")))?; }
-                    None => { t.remove(KEY_OWNER_ID).ok(); }
+                    Some(s) => {
+                        t.insert(KEY_OWNER_ID, s).map_err(|e| {
+                            crate::error::Error::from_label(label, format!("meta owner: {e}"))
+                        })?;
+                    }
+                    None => {
+                        t.remove(KEY_OWNER_ID).ok();
+                    }
                 }
                 let updated = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-                t.insert(KEY_UPDATED_AT, updated.as_str()).map_err(|e| crate::error::Error::from_label(label, format!("meta updated: {e}")))?;
+                t.insert(KEY_UPDATED_AT, updated.as_str()).map_err(|e| {
+                    crate::error::Error::from_label(label, format!("meta updated: {e}"))
+                })?;
                 for (k, v) in cache.extras() {
-                    t.insert(k, v.as_str()).map_err(|e| crate::error::Error::from_label(label, format!("meta extra: {e}")))?;
+                    t.insert(k, v.as_str()).map_err(|e| {
+                        crate::error::Error::from_label(label, format!("meta extra: {e}"))
+                    })?;
                 }
             }
+            drop(meta_table);
 
             // Names (lists / folders)
             {
                 let names_def: TableDefinition<&str, &str> = TableDefinition::new(names_name);
-                let mut t = write.open_table(names_def).map_err(|e| crate::error::Error::from_label(label, format!("{names_name}: {e}")))?;
+                let mut t = write.open_table(names_def).map_err(|e| {
+                    crate::error::Error::from_label(label, format!("{names_name}: {e}"))
+                })?;
                 if full {
                     // Full rewrite: truncate then insert all
-                    while t.pop_first().map_err(|e| crate::error::Error::from_label(label, format!("{names_name} clear: {e}")))?.is_some() {}
+                    while t
+                        .pop_first()
+                        .map_err(|e| {
+                            crate::error::Error::from_label(
+                                label,
+                                format!("{names_name} clear: {e}"),
+                            )
+                        })?
+                        .is_some()
+                    {}
                     for (id, name) in cache.names() {
-                        t.insert(id.as_str(), name.as_str()).map_err(|e| crate::error::Error::from_label(label, format!("{names_name} ins: {e}")))?;
+                        t.insert(id.as_str(), name.as_str()).map_err(|e| {
+                            crate::error::Error::from_label(label, format!("{names_name} ins: {e}"))
+                        })?;
                     }
                 } else {
                     // Incremental: upsert changed, remove deleted
@@ -336,7 +445,12 @@ impl<C: StoreCache> RedbStore<C> {
                     }
                     for id in &ds.dirty_names {
                         if let Some(name) = cache.names().get(id) {
-                            t.insert(id.as_str(), name.as_str()).map_err(|e| crate::error::Error::from_label(label, format!("{names_name} ins: {e}")))?;
+                            t.insert(id.as_str(), name.as_str()).map_err(|e| {
+                                crate::error::Error::from_label(
+                                    label,
+                                    format!("{names_name} ins: {e}"),
+                                )
+                            })?;
                         }
                     }
                 }
@@ -345,13 +459,28 @@ impl<C: StoreCache> RedbStore<C> {
             // Items (reminders / notes)
             {
                 let items_def: TableDefinition<&str, &[u8]> = TableDefinition::new(items_name);
-                let mut t = write.open_table(items_def).map_err(|e| crate::error::Error::from_label(label, format!("{items_name}: {e}")))?;
+                let mut t = write.open_table(items_def).map_err(|e| {
+                    crate::error::Error::from_label(label, format!("{items_name}: {e}"))
+                })?;
                 if full {
                     // Full rewrite: truncate then insert all
-                    while t.pop_first().map_err(|e| crate::error::Error::from_label(label, format!("{items_name} clear: {e}")))?.is_some() {}
+                    while t
+                        .pop_first()
+                        .map_err(|e| {
+                            crate::error::Error::from_label(
+                                label,
+                                format!("{items_name} clear: {e}"),
+                            )
+                        })?
+                        .is_some()
+                    {}
                     for (id, item) in cache.items() {
-                        let bytes = serde_json::to_vec(item).map_err(|e| crate::error::Error::from_label(label, format!("{items_name} enc: {e}")))?;
-                        t.insert(id.as_str(), &bytes[..]).map_err(|e| crate::error::Error::from_label(label, format!("{items_name} ins: {e}")))?;
+                        let bytes = serde_json::to_vec(item).map_err(|e| {
+                            crate::error::Error::from_label(label, format!("{items_name} enc: {e}"))
+                        })?;
+                        t.insert(id.as_str(), &bytes[..]).map_err(|e| {
+                            crate::error::Error::from_label(label, format!("{items_name} ins: {e}"))
+                        })?;
                     }
                 } else {
                     // Incremental: upsert changed, remove deleted
@@ -360,14 +489,28 @@ impl<C: StoreCache> RedbStore<C> {
                     }
                     for id in &ds.dirty_items {
                         if let Some(item) = cache.items().get(id) {
-                            let bytes = serde_json::to_vec(item).map_err(|e| crate::error::Error::from_label(label, format!("{items_name} enc: {e}")))?;
-                            t.insert(id.as_str(), &bytes[..]).map_err(|e| crate::error::Error::from_label(label, format!("{items_name} ins: {e}")))?;
+                            let bytes = serde_json::to_vec(item).map_err(|e| {
+                                crate::error::Error::from_label(
+                                    label,
+                                    format!("{items_name} enc: {e}"),
+                                )
+                            })?;
+                            t.insert(id.as_str(), &bytes[..]).map_err(|e| {
+                                crate::error::Error::from_label(
+                                    label,
+                                    format!("{items_name} ins: {e}"),
+                                )
+                            })?;
                         }
                     }
                 }
             }
 
-            write.commit().map_err(|e| crate::error::Error::from_label(label, format!("redb commit: {e}")))?;
+            write
+                .commit()
+                .map_err(|e| crate::error::Error::from_label(label, format!("redb commit: {e}")))?;
+            cache.set_sync_token(token_to_write.clone());
+            cache.set_loaded_disk_sync_token(token_to_write);
             Ok(())
         })
     }

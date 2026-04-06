@@ -1,9 +1,9 @@
+use clap::Subcommand;
 use icloud_api::session::SecretsBackend;
 use icloud_api::Result as IResult;
-use clap::Subcommand;
 
 use crate::output::{self, hint, print_ok, print_ok_with, OutputMode};
-use crate::{OpenReminders, RemindersArgs, resolve_date_filter, resolve_due_date};
+use crate::{resolve_date_filter, resolve_due_date, OpenReminders, RemindersArgs};
 
 #[derive(Subcommand)]
 pub(crate) enum RemindersCmd {
@@ -155,17 +155,25 @@ pub(crate) enum RemindersCmd {
     },
 }
 
-pub(crate) async fn handle_reminders(out: OutputMode, secrets: SecretsBackend, max_age: u64, sub: RemindersCmd) -> IResult<()> {
+pub(crate) async fn handle_reminders(
+    out: OutputMode,
+    secrets: SecretsBackend,
+    max_age: u64,
+    sub: RemindersCmd,
+) -> IResult<()> {
     let json = out.json;
     match sub {
         RemindersCmd::Sync { args, force } => {
             let sp = args.session_path();
             let dp = args.db_path();
-            let r = OpenReminders::open(&sp, &dp, secrets, force, 0, !out.is_human()).await?;
+            let mut r = OpenReminders::open(&sp, &dp, secrets, force, 0, !out.is_human()).await?;
             let count = r.engine.cache.reminders.len();
             r.save()?;
-            print_ok_with(json, &format!("Synced {count} reminders to {}", dp.display()),
-                &serde_json::json!({"db": dp.display().to_string(), "count": count}));
+            print_ok_with(
+                json,
+                &format!("Synced {count} reminders to {}", dp.display()),
+                &serde_json::json!({"db": dp.display().to_string(), "count": count}),
+            );
             if out.is_human() {
                 hint(&[
                     "icloud reminders list      — list incomplete reminders",
@@ -174,11 +182,28 @@ pub(crate) async fn handle_reminders(out: OutputMode, secrets: SecretsBackend, m
             }
         }
 
-        RemindersCmd::List { args, filter, list, all, from, to, limit } => {
-            let r = OpenReminders::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+        RemindersCmd::List {
+            args,
+            filter,
+            list,
+            all,
+            from,
+            to,
+            limit,
+        } => {
+            let mut r = OpenReminders::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
 
             // Resolve smart filter into (include_completed, from_date, to_date)
-            let (inc_completed, filter_from, filter_to) = resolve_date_filter(filter.as_deref(), all);
+            let (inc_completed, filter_from, filter_to) =
+                resolve_date_filter(filter.as_deref(), all);
 
             // For "completed" filter, only show completed ones
             let show_completed_only = matches!(filter.as_deref(), Some("completed" | "done" | "c"));
@@ -197,9 +222,14 @@ pub(crate) async fn handle_reminders(out: OutputMode, secrets: SecretsBackend, m
 
             let mut filtered: Vec<_> = reminders
                 .into_iter()
-                .filter(|r| list.as_ref().is_none_or(|lf| r.list_name.eq_ignore_ascii_case(lf)))
                 .filter(|r| {
-                    if show_completed_only { return r.completed; }
+                    list.as_ref()
+                        .is_none_or(|lf| r.list_name.eq_ignore_ascii_case(lf))
+                })
+                .filter(|r| {
+                    if show_completed_only {
+                        return r.completed;
+                    }
                     true
                 })
                 .filter(|r| {
@@ -214,12 +244,18 @@ pub(crate) async fn handle_reminders(out: OutputMode, secrets: SecretsBackend, m
                 .filter(|r| {
                     if let Some(ref f) = eff_from {
                         r.due.as_ref().is_some_and(|d| d.as_str() >= f.as_str())
-                    } else { true }
+                    } else {
+                        true
+                    }
                 })
                 .filter(|r| {
                     if let Some(ref t) = eff_to {
-                        r.due.as_ref().is_some_and(|d| d.len() >= 10 && &d[..10] <= t.as_str())
-                    } else { true }
+                        r.due
+                            .as_ref()
+                            .is_some_and(|d| d.len() >= 10 && &d[..10] <= t.as_str())
+                    } else {
+                        true
+                    }
                 })
                 .collect();
             filtered.sort_by(|a, b| a.due.cmp(&b.due));
@@ -240,8 +276,23 @@ pub(crate) async fn handle_reminders(out: OutputMode, secrets: SecretsBackend, m
             }
         }
 
-        RemindersCmd::Lists { args, name, rename, delete, create, force } => {
-            let mut r = OpenReminders::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+        RemindersCmd::Lists {
+            args,
+            name,
+            rename,
+            delete,
+            create,
+            force,
+        } => {
+            let mut r = OpenReminders::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
 
             if let Some(ref list_name) = name {
                 if let Some(ref new_name) = rename {
@@ -254,7 +305,8 @@ pub(crate) async fn handle_reminders(out: OutputMode, secrets: SecretsBackend, m
                     if !force && !out.no_input && !json {
                         eprint!("Delete list '{list_name}' and all its reminders? [y/N] ");
                         let mut input = String::new();
-                        std::io::stdin().read_line(&mut input)
+                        std::io::stdin()
+                            .read_line(&mut input)
                             .map_err(|e| icloud_api::Error::Reminders(format!("stdin: {e}")))?;
                         if !input.trim().eq_ignore_ascii_case("y") {
                             eprintln!("Cancelled");
@@ -287,14 +339,41 @@ pub(crate) async fn handle_reminders(out: OutputMode, secrets: SecretsBackend, m
             }
         }
 
-        RemindersCmd::Add { args, list, title, title_flag, due, priority, notes, parent } => {
-            let resolved_title = title.or(title_flag)
+        RemindersCmd::Add {
+            args,
+            list,
+            title,
+            title_flag,
+            due,
+            priority,
+            notes,
+            parent,
+        } => {
+            let resolved_title = title
+                .or(title_flag)
                 .ok_or_else(|| icloud_api::Error::Reminders("missing reminder title".into()))?;
             // Resolve natural-language due dates
             let resolved_due = due.map(|d| resolve_due_date(&d));
-            let mut r = OpenReminders::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+            let mut r = OpenReminders::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             let t = resolved_title.clone();
-            r.engine.add_reminder(&resolved_title, &list, resolved_due.as_deref(), priority.as_deref(), notes.as_deref(), parent.as_deref()).await?;
+            r.engine
+                .add_reminder(
+                    &resolved_title,
+                    &list,
+                    resolved_due.as_deref(),
+                    priority.as_deref(),
+                    notes.as_deref(),
+                    parent.as_deref(),
+                )
+                .await?;
             r.save()?;
             print_ok(json, &format!("Added: {t}"));
             if out.is_human() {
@@ -302,26 +381,60 @@ pub(crate) async fn handle_reminders(out: OutputMode, secrets: SecretsBackend, m
             }
         }
 
-        RemindersCmd::AddBatch { args, list, parent, titles } => {
-            let mut r = OpenReminders::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+        RemindersCmd::AddBatch {
+            args,
+            list,
+            parent,
+            titles,
+        } => {
+            let mut r = OpenReminders::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             let count = titles.len();
-            r.engine.add_reminders_batch(&titles, &list, parent.as_deref()).await?;
+            r.engine
+                .add_reminders_batch(&titles, &list, parent.as_deref())
+                .await?;
             r.save()?;
-            print_ok_with(json, &format!("Added {count} reminders"),
-                &serde_json::json!({"count": count}));
+            print_ok_with(
+                json,
+                &format!("Added {count} reminders"),
+                &serde_json::json!({"count": count}),
+            );
         }
 
         RemindersCmd::Complete { args, ids, dry_run } => {
             if ids.is_empty() {
-                return Err(icloud_api::Error::Reminders("no reminder IDs specified".into()));
+                return Err(icloud_api::Error::Reminders(
+                    "no reminder IDs specified".into(),
+                ));
             }
-            let mut r = OpenReminders::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+            let mut r = OpenReminders::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             if dry_run {
                 for id in &ids {
                     let found = r.engine.cache.find_reminder(id);
                     match found {
                         Some(full) => {
-                            let title = r.engine.cache.reminders.get(&full).map(|d| d.title.as_str()).unwrap_or("?");
+                            let title = r
+                                .engine
+                                .cache
+                                .reminders
+                                .get(&full)
+                                .map(|d| d.title.as_str())
+                                .unwrap_or("?");
                             eprintln!("Would complete: {title} ({full})");
                         }
                         None => eprintln!("Not found: {id}"),
@@ -334,22 +447,46 @@ pub(crate) async fn handle_reminders(out: OutputMode, secrets: SecretsBackend, m
                     r.engine.complete_reminder(id).await?;
                 }
                 r.save()?;
-                print_ok_with(json, &format!("Completed {count} reminder(s)"),
-                    &serde_json::json!({"count": count}));
+                print_ok_with(
+                    json,
+                    &format!("Completed {count} reminder(s)"),
+                    &serde_json::json!({"count": count}),
+                );
             }
         }
 
-        RemindersCmd::Delete { args, ids, dry_run, force } => {
+        RemindersCmd::Delete {
+            args,
+            ids,
+            dry_run,
+            force,
+        } => {
             if ids.is_empty() {
-                return Err(icloud_api::Error::Reminders("no reminder IDs specified".into()));
+                return Err(icloud_api::Error::Reminders(
+                    "no reminder IDs specified".into(),
+                ));
             }
-            let mut r = OpenReminders::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+            let mut r = OpenReminders::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             if dry_run {
                 for id in &ids {
                     let found = r.engine.cache.find_reminder(id);
                     match found {
                         Some(full) => {
-                            let title = r.engine.cache.reminders.get(&full).map(|d| d.title.as_str()).unwrap_or("?");
+                            let title = r
+                                .engine
+                                .cache
+                                .reminders
+                                .get(&full)
+                                .map(|d| d.title.as_str())
+                                .unwrap_or("?");
                             eprintln!("Would delete: {title} ({full})");
                         }
                         None => eprintln!("Not found: {id}"),
@@ -360,7 +497,8 @@ pub(crate) async fn handle_reminders(out: OutputMode, secrets: SecretsBackend, m
                 if !force && !out.no_input && !json && ids.len() > 1 {
                     eprint!("Delete {} reminders? [y/N] ", ids.len());
                     let mut input = String::new();
-                    std::io::stdin().read_line(&mut input)
+                    std::io::stdin()
+                        .read_line(&mut input)
                         .map_err(|e| icloud_api::Error::Reminders(format!("stdin: {e}")))?;
                     if !input.trim().eq_ignore_ascii_case("y") {
                         eprintln!("Cancelled");
@@ -372,13 +510,34 @@ pub(crate) async fn handle_reminders(out: OutputMode, secrets: SecretsBackend, m
                     r.engine.delete_reminder(id).await?;
                 }
                 r.save()?;
-                print_ok_with(json, &format!("Deleted {count} reminder(s)"),
-                    &serde_json::json!({"count": count}));
+                print_ok_with(
+                    json,
+                    &format!("Deleted {count} reminder(s)"),
+                    &serde_json::json!({"count": count}),
+                );
             }
         }
 
-        RemindersCmd::Edit { args, id, title, due, clear_due, notes, priority, complete, incomplete } => {
-            let mut r = OpenReminders::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+        RemindersCmd::Edit {
+            args,
+            id,
+            title,
+            due,
+            clear_due,
+            notes,
+            priority,
+            complete,
+            incomplete,
+        } => {
+            let mut r = OpenReminders::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             // Handle complete/incomplete via dedicated methods
             if complete {
                 r.engine.complete_reminder(&id).await?;
@@ -393,7 +552,16 @@ pub(crate) async fn handle_reminders(out: OutputMode, secrets: SecretsBackend, m
                 return Ok(());
             }
             let resolved_due = due.map(|d| resolve_due_date(&d));
-            r.engine.edit_reminder(&id, title.as_deref(), resolved_due.as_deref(), clear_due, notes.as_deref(), priority.as_deref()).await?;
+            r.engine
+                .edit_reminder(
+                    &id,
+                    title.as_deref(),
+                    resolved_due.as_deref(),
+                    clear_due,
+                    notes.as_deref(),
+                    priority.as_deref(),
+                )
+                .await?;
             r.save()?;
             print_ok(json, "Updated");
         }

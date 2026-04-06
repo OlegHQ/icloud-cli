@@ -29,7 +29,10 @@ pub struct SrpParams {
 
 impl SrpParams {
     pub fn apple_2048() -> Self {
-        let hex: String = N_HEX_2048.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+        let hex: String = N_HEX_2048
+            .chars()
+            .filter(|c| c.is_ascii_hexdigit())
+            .collect();
         let n = BigUint::from_str_radix(&hex, 16).expect("N hex");
         Self {
             g: BigUint::from(2u8),
@@ -110,7 +113,14 @@ impl SrpParams {
         Sha256::digest(s).to_vec()
     }
 
-    pub(crate) fn calculate_m1(&self, username: &[u8], salt: &[u8], a: &[u8], b: &[u8], kk: &[u8]) -> Vec<u8> {
+    pub(crate) fn calculate_m1(
+        &self,
+        username: &[u8],
+        salt: &[u8],
+        a: &[u8],
+        b: &[u8],
+        kk: &[u8],
+    ) -> Vec<u8> {
         let digest_g = Sha256::digest(self.pad_to_n_uint(&self.g));
         let digest_n = Sha256::digest(self.n.to_bytes_be());
         let digest_i = Sha256::digest(username);
@@ -182,16 +192,18 @@ impl SrpClient {
         base64::engine::general_purpose::STANDARD.encode(&self.aa)
     }
 
-    pub fn process_challenge(&mut self, username: &str, pass_key: &[u8], salt: &[u8], b_bytes: &[u8]) {
-        let x = self
-            .params
-            .calculate_x(salt, username.as_bytes(), pass_key);
+    pub fn process_challenge(
+        &mut self,
+        username: &str,
+        pass_key: &[u8],
+        salt: &[u8],
+        b_bytes: &[u8],
+    ) {
+        let x = self.params.calculate_x(salt, username.as_bytes(), pass_key);
         let big_b = BigUint::from_bytes_be(b_bytes);
         let u = self.params.calculate_u(&self.aa, b_bytes);
         let k = self.params.get_multiplier();
-        let s = self
-            .params
-            .calculate_s(&k, &x, &self.secret_a, &big_b, &u);
+        let s = self.params.calculate_s(&k, &x, &self.secret_a, &big_b, &u);
         let key = self.params.calculate_k(&s);
         self.m1 = self
             .params

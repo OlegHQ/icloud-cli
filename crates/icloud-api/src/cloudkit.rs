@@ -117,7 +117,10 @@ impl CloudKitClient {
     }
 
     pub async fn get_owner_id(&self) -> Result<String> {
-        let path = format!("database/1/{}/production/private/zones/list", self.container);
+        let path = format!(
+            "database/1/{}/production/private/zones/list",
+            self.container
+        );
         let result = self.post(&path, &json!({})).await?;
         if let Some(zones) = result["zones"].as_array() {
             for z in zones {
@@ -169,11 +172,7 @@ impl CloudKitClient {
             .await
     }
 
-    pub async fn modify_records(
-        &self,
-        owner_id: &str,
-        operations: Vec<Value>,
-    ) -> Result<Value> {
+    pub async fn modify_records(&self, owner_id: &str, operations: Vec<Value>) -> Result<Value> {
         let path = format!(
             "database/1/{}/production/private/records/modify",
             self.container
@@ -215,10 +214,7 @@ impl CloudKitClient {
     }
 
     /// Check CloudKit modify_records response for per-record server errors.
-    pub fn check_record_errors(
-        result: &Value,
-        wrap: impl Fn(String) -> Error,
-    ) -> Result<()> {
+    pub fn check_record_errors(result: &Value, wrap: impl Fn(String) -> Error) -> Result<()> {
         if let Some(recs) = result["records"].as_array() {
             for r in recs {
                 if let Some(code) = r["serverErrorCode"].as_str() {
@@ -245,7 +241,11 @@ impl CloudKitClient {
         let mut all = Vec::new();
         loop {
             let token_str = sync_token.clone().unwrap_or_default();
-            let token_ref = if token_str.is_empty() { None } else { Some(token_str.as_str()) };
+            let token_ref = if token_str.is_empty() {
+                None
+            } else {
+                Some(token_str.as_str())
+            };
             let data = self
                 .changes_zone(owner_id, token_ref, desired_keys, desired_record_types)
                 .await?;
@@ -293,7 +293,11 @@ pub fn ck_field_int(fields: &serde_json::Map<String, Value>, key: &str) -> i32 {
 pub fn ck_field_int64(fields: &serde_json::Map<String, Value>, key: &str) -> Option<i64> {
     let val = fields.get(key)?.get("value")?;
     let v = val.as_i64().or_else(|| val.as_f64().map(|x| x as i64))?;
-    if v == 0 { None } else { Some(v) }
+    if v == 0 {
+        None
+    } else {
+        Some(v)
+    }
 }
 
 /// Extract a reference field's recordName.
@@ -351,4 +355,3 @@ impl CloudKitClient {
         self.post(&path, &json!({})).await.is_ok()
     }
 }
-

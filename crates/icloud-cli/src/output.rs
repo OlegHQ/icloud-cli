@@ -56,10 +56,7 @@ pub fn print_table_mode(headers: &[&str], rows: &[Vec<String>], mode: OutputMode
             .collect::<Vec<_>>()
             .join("  ")
     };
-    println!(
-        "{}",
-        fmt_row(headers)
-    );
+    println!("{}", fmt_row(headers));
     for row in rows {
         let refs: Vec<&str> = row.iter().map(|s| s.as_str()).collect();
         println!("{}", fmt_row(&refs));
@@ -190,8 +187,7 @@ pub fn print_note_folders_mode(mode: OutputMode, folders: &[NoteFolder]) {
     }
     // Build tree: collect children per parent, then DFS print.
     use std::collections::HashMap;
-    let by_id: HashMap<&str, &NoteFolder> =
-        folders.iter().map(|f| (f.id.as_str(), f)).collect();
+    let by_id: HashMap<&str, &NoteFolder> = folders.iter().map(|f| (f.id.as_str(), f)).collect();
     let mut children: HashMap<&str, Vec<&NoteFolder>> = HashMap::new();
     let mut roots: Vec<&NoteFolder> = Vec::new();
     for f in folders {

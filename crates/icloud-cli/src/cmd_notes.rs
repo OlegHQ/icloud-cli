@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
+use clap::Subcommand;
 use icloud_api::session::SecretsBackend;
 use icloud_api::Result as IResult;
-use clap::Subcommand;
 
 use crate::output::{self, hint, print_json, print_ok, print_ok_with, OutputMode};
-use crate::{OpenNotes, NotesArgs, read_body_or_stdin, sync_spinner};
+use crate::{read_body_or_stdin, sync_spinner, NotesArgs, OpenNotes};
 
 #[derive(Subcommand)]
 pub(crate) enum NotesCmd {
@@ -116,13 +116,18 @@ pub(crate) enum NotesCmd {
     },
 }
 
-pub(crate) async fn handle_notes(out: OutputMode, secrets: SecretsBackend, max_age: u64, sub: NotesCmd) -> IResult<()> {
+pub(crate) async fn handle_notes(
+    out: OutputMode,
+    secrets: SecretsBackend,
+    max_age: u64,
+    sub: NotesCmd,
+) -> IResult<()> {
     let json = out.json;
     match sub {
         NotesCmd::Sync { args, force } => {
             let sp = args.session_path();
             let dp = args.db_path();
-            let r = OpenNotes::open(&sp, &dp, secrets, force, 0, !out.is_human()).await?;
+            let mut r = OpenNotes::open(&sp, &dp, secrets, force, 0, !out.is_human()).await?;
             let count = r.engine.cache.notes.len();
             r.save()?;
             print_ok_with(
@@ -138,8 +143,20 @@ pub(crate) async fn handle_notes(out: OutputMode, secrets: SecretsBackend, max_a
             }
         }
 
-        NotesCmd::List { args, folder, limit } => {
-            let r = OpenNotes::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+        NotesCmd::List {
+            args,
+            folder,
+            limit,
+        } => {
+            let mut r = OpenNotes::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             let notes = r.engine.get_notes();
             r.save()?;
             let mut filtered: Vec<_> = notes
@@ -159,14 +176,28 @@ pub(crate) async fn handle_notes(out: OutputMode, secrets: SecretsBackend, max_a
             }
         }
 
-        NotesCmd::Folders { args, delete, name, force } => {
-            let mut r = OpenNotes::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+        NotesCmd::Folders {
+            args,
+            delete,
+            name,
+            force,
+        } => {
+            let mut r = OpenNotes::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             if let Some(ref folder_name) = name {
                 if delete {
                     if !force && !out.no_input && !json {
                         eprint!("Delete folder '{folder_name}' and all its notes? [y/N] ");
                         let mut input = String::new();
-                        std::io::stdin().read_line(&mut input)
+                        std::io::stdin()
+                            .read_line(&mut input)
                             .map_err(|e| icloud_api::Error::Notes(format!("stdin: {e}")))?;
                         if !input.trim().eq_ignore_ascii_case("y") {
                             eprintln!("Cancelled");
@@ -174,7 +205,9 @@ pub(crate) async fn handle_notes(out: OutputMode, secrets: SecretsBackend, max_a
                         }
                     }
                     // Delete all notes in the folder, then remove from cache
-                    let notes_in_folder: Vec<String> = r.engine.get_notes()
+                    let notes_in_folder: Vec<String> = r
+                        .engine
+                        .get_notes()
                         .into_iter()
                         .filter(|n| n.folder_name.eq_ignore_ascii_case(folder_name))
                         .map(|n| n.id)
@@ -184,8 +217,11 @@ pub(crate) async fn handle_notes(out: OutputMode, secrets: SecretsBackend, max_a
                         r.engine.delete_note(note_id).await?;
                     }
                     r.save()?;
-                    print_ok_with(json, &format!("Deleted folder '{folder_name}' ({count} notes)"),
-                        &serde_json::json!({"folder": folder_name, "notes_deleted": count}));
+                    print_ok_with(
+                        json,
+                        &format!("Deleted folder '{folder_name}' ({count} notes)"),
+                        &serde_json::json!({"folder": folder_name, "notes_deleted": count}),
+                    );
                 } else {
                     // Show notes in this folder
                     let notes = r.engine.get_notes();
@@ -204,8 +240,15 @@ pub(crate) async fn handle_notes(out: OutputMode, secrets: SecretsBackend, max_a
         }
 
         NotesCmd::Get { args, id, debug } => {
-            let mut r =
-                OpenNotes::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+            let mut r = OpenNotes::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             let record_name = r
                 .engine
                 .cache
@@ -238,45 +281,103 @@ pub(crate) async fn handle_notes(out: OutputMode, secrets: SecretsBackend, max_a
 
         NotesCmd::Create { args, folder, body } => {
             let md = read_body_or_stdin(body)?;
-            let mut r = OpenNotes::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+            let mut r = OpenNotes::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             let folder_name = folder.clone();
             // If body starts with "RAW:" use it as pre-encoded body (HAR replay test)
             if md.starts_with("RAW:") {
-                r.engine.create_note_raw("RawTest", "raw test", md.trim_start_matches("RAW:").trim(), &folder).await?;
+                r.engine
+                    .create_note_raw(
+                        "RawTest",
+                        "raw test",
+                        md.trim_start_matches("RAW:").trim(),
+                        &folder,
+                    )
+                    .await?;
             } else {
                 r.engine.create_note(&md, &folder).await?;
             }
             r.save()?;
-            print_ok_with(json, &format!("Created in folder '{folder_name}'"),
-                &serde_json::json!({"folder": folder_name}));
+            print_ok_with(
+                json,
+                &format!("Created in folder '{folder_name}'"),
+                &serde_json::json!({"folder": folder_name}),
+            );
         }
 
         NotesCmd::Update { args, id, body } => {
             let md = read_body_or_stdin(body)?;
-            let mut r = OpenNotes::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+            let mut r = OpenNotes::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             r.engine.update_note(&id, &md).await?;
             r.save()?;
             print_ok(json, "Updated");
         }
 
         NotesCmd::Delete { args, id } => {
-            let mut r = OpenNotes::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+            let mut r = OpenNotes::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             r.engine.delete_note(&id).await?;
             r.save()?;
             print_ok(json, "Deleted");
         }
 
         NotesCmd::Move { args, id, folder } => {
-            let mut r = OpenNotes::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+            let mut r = OpenNotes::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             let folder_name = folder.clone();
             r.engine.move_note(&id, &folder).await?;
             r.save()?;
-            print_ok_with(json, &format!("Moved to '{folder_name}'"),
-                &serde_json::json!({"folder": folder_name}));
+            print_ok_with(
+                json,
+                &format!("Moved to '{folder_name}'"),
+                &serde_json::json!({"folder": folder_name}),
+            );
         }
 
-        NotesCmd::Search { args, query, folder, limit } => {
-            let r = OpenNotes::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+        NotesCmd::Search {
+            args,
+            query,
+            folder,
+            limit,
+        } => {
+            let mut r = OpenNotes::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             let notes = r.engine.get_notes();
             r.save()?;
             let q = query.to_ascii_lowercase();
@@ -304,7 +405,15 @@ pub(crate) async fn handle_notes(out: OutputMode, secrets: SecretsBackend, max_a
         }
 
         NotesCmd::Export { args, folder, path } => {
-            let mut r = OpenNotes::open(&args.session_path(), &args.db_path(), secrets, false, max_age, !out.is_human()).await?;
+            let mut r = OpenNotes::open(
+                &args.session_path(),
+                &args.db_path(),
+                secrets,
+                false,
+                max_age,
+                !out.is_human(),
+            )
+            .await?;
             let notes = r.engine.get_notes();
             let filtered: Vec<_> = notes
                 .into_iter()
@@ -334,8 +443,9 @@ pub(crate) async fn handle_notes(out: OutputMode, secrets: SecretsBackend, max_a
                 // Fetch body for each note
                 match r.engine.fetch_body(&note.id).await {
                     Ok(md) => {
-                        std::fs::write(&filepath, md)
-                            .map_err(|e| icloud_api::Error::Notes(format!("write {}: {e}", filepath.display())))?;
+                        std::fs::write(&filepath, md).map_err(|e| {
+                            icloud_api::Error::Notes(format!("write {}: {e}", filepath.display()))
+                        })?;
                     }
                     Err(e) => {
                         eprintln!("warning: skip '{}': {e}", note.title);
@@ -346,8 +456,11 @@ pub(crate) async fn handle_notes(out: OutputMode, secrets: SecretsBackend, max_a
                 sp.finish_and_clear();
             }
             r.save()?;
-            print_ok_with(json, &format!("Exported {count} notes to {}", out_dir.display()),
-                &serde_json::json!({"path": out_dir.display().to_string(), "count": count}));
+            print_ok_with(
+                json,
+                &format!("Exported {count} notes to {}", out_dir.display()),
+                &serde_json::json!({"path": out_dir.display().to_string(), "count": count}),
+            );
         }
     }
     Ok(())

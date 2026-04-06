@@ -53,6 +53,16 @@ This repository is a **Rust** command-line tool for **iCloud** features that mat
 
 - See `references/README.md` for upstream repositories and what to port or compare against.
 
+## Progress tracking
+
+- Maintain a repo-root `PROGRESS.md` as the running handoff log for cross-session work.
+- After any substantial refactor, vendored `just-bash` cleanup, or `icloud bash` architecture change, update `PROGRESS.md` with:
+  - what changed
+  - what was verified
+  - what remains broken or risky
+  - the next concrete tasks for the following session
+- New sessions should read `PROGRESS.md` before planning more cleanup.
+
 ## Hide My Email rate limits
 
 Unofficial clients report roughly **~5 generated addresses per 30 minutes** per account (family pooling may apply) and a **~700** total-alias ceiling. Surface these constraints in user-facing docs/help when expanding HME features.
@@ -142,6 +152,7 @@ CloudKit is the conflict arbiter. Two processes writing different records: no co
 - **`icloud-api`**: All CloudKit protocol, sync engines, cache, persistence. No bash/VFS knowledge.
 - **`icloud-bash`**: VFS implementation (`FileSystem` trait), frontmatter, path mapping, filename sanitization. Depends on `icloud-api` for engines and `just-bash` for the bash interpreter.
 - **`icloud-cli`**: CLI entry point for `icloud bash` subcommand. Wires session loading, engine creation, and VFS together.
+- **`just-bash`**: Treat the vendored fork as a standalone generic crate. Do **not** add `icloud-*` dependencies, iCloud-specific types, or Apple service semantics to it. Generic interpreter/FS fixes belong in `just-bash`; iCloud behavior stays in `icloud-bash` / `icloud-cli`.
 
 ### Testing Strategy
 

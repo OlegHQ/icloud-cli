@@ -242,10 +242,7 @@ impl NotesSyncEngine {
         let now = chrono::Utc::now().timestamp_millis();
 
         let mut fields = serde_json::Map::new();
-        fields.insert(
-            "ModificationDate".into(),
-            json!({"value": now}),
-        );
+        fields.insert("ModificationDate".into(), json!({"value": now}));
         fields.insert(
             "TitleEncrypted".into(),
             json!({"value": b64_encode_str(&nd.title)}),
@@ -256,10 +253,7 @@ impl NotesSyncEngine {
         );
         fields.insert("Folder".into(), json!({"value": trash_ref}));
         fields.insert("Folders".into(), json!({"value": [trash_ref]}));
-        fields.insert(
-            "FoldersModificationDate".into(),
-            json!({"value": now}),
-        );
+        fields.insert("FoldersModificationDate".into(), json!({"value": now}));
         fields.insert("FirstAttachmentThumbnail".into(), json!({}));
         fields.insert("FirstAttachmentUTIEncrypted".into(), json!({}));
         fields.insert("TextDataAsset".into(), json!({}));
@@ -386,6 +380,82 @@ impl NotesSyncEngine {
             nd.change_tag = first_change_tag(&result);
         }
         self.cache.ds.item_changed(full);
+        Ok(())
+    }
+
+    /// Create a new note folder (CloudKit `Folder` record).
+    pub async fn create_folder(&mut self, name: &str) -> Result<String> {
+        let _owner = self.owner_id().await?;
+        if self.cache.find_folder_by_name(name).is_some() {
+            return Err(Error::Notes(format!("folder '{name}' already exists")));
+        }
+        let record_name = uuid::Uuid::new_v4().to_string();
+        let title_b64 = b64_encode_str(name);
+        let mut fields = serde_json::Map::new();
+        fields.insert("TitleEncrypted".into(), json!({"value": title_b64}));
+        if let Some(notes_id) = self.cache.find_folder_by_name("Notes") {
+            if let Some(parent) = self.cache.folder_parents.get(&notes_id) {
+                fields.insert(
+                    "ParentFolder".into(),
+                    json!({"value": self.folder_ref(parent)}),
+                );
+            }
+        }
+        let op = json!({
+            "operationType": "create",
+            "record": {
+                "recordType": "Folder",
+                "recordName": &record_name,
+                "createShortGUID": true,
+                "fields": fields,
+            }
+        });
+        let result = modify_notes(&self.ck, vec![op]).await?;
+        check_errors(&result)?;
+        self.cache
+            .folders
+            .insert(record_name.clone(), name.to_string());
+        self.cache.ds.name_changed(record_name.clone());
+        Ok(record_name)
+    }
+
+    /// Delete a folder that contains no notes (metadata only).
+    pub async fn delete_folder(&mut self, folder_name: &str) -> Result<()> {
+        let folder_id = self
+            .cache
+            .find_folder_by_name(folder_name)
+            .ok_or_else(|| Error::Notes(format!("folder '{folder_name}' not found")))?;
+        for nd in self.cache.notes.values() {
+            if nd.deleted {
+                continue;
+            }
+            if nd.folder_ref.as_deref() == Some(&folder_id) {
+                return Err(Error::Notes(format!("folder '{folder_name}' is not empty")));
+            }
+        }
+        let owner = self.owner_id().await?;
+        let result = self
+            .ck
+            .lookup_records(&owner, &[&folder_id], &["TitleEncrypted"])
+            .await?;
+        let ct = result["records"]
+            .as_array()
+            .and_then(|recs| recs.first())
+            .and_then(|r| r["recordChangeTag"].as_str())
+            .ok_or_else(|| Error::Notes("cannot read folder change tag".into()))?
+            .to_string();
+        let op = json!({
+            "operationType": "delete",
+            "record": {
+                "recordName": folder_id,
+                "recordChangeTag": ct,
+            }
+        });
+        let result = modify_notes(&self.ck, vec![op]).await?;
+        check_errors(&result)?;
+        self.cache.folders.remove(&folder_id);
+        self.cache.folder_parents.remove(&folder_id);
+        self.cache.ds.name_deleted(folder_id);
         Ok(())
     }
 }

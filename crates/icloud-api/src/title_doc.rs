@@ -113,10 +113,7 @@ pub fn extract_title(td_b64: &str) -> String {
     if td_b64.is_empty() {
         return String::new();
     }
-    let Ok(raw) = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        td_b64,
-    ) else {
+    let Ok(raw) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, td_b64) else {
         return String::new();
     };
     let decompressed = decompress(&raw);
@@ -141,7 +138,9 @@ pub fn extract_title(td_b64: &str) -> String {
 pub fn decode_varint(buf: &[u8]) -> Option<(u64, usize)> {
     let mut val = 0u64;
     for (i, &b) in buf.iter().enumerate() {
-        if i >= 10 { return None; }
+        if i >= 10 {
+            return None;
+        }
         val |= ((b & 0x7f) as u64) << (7 * i);
         if b & 0x80 == 0 {
             return Some((val, i + 1));
@@ -169,7 +168,9 @@ pub fn proto_get_bytes(buf: &[u8], field_num: u32) -> Option<&[u8]> {
                 let (len, n) = decode_varint(&buf[pos..])?;
                 pos += n;
                 let len = len as usize;
-                if pos + len > buf.len() { return None; }
+                if pos + len > buf.len() {
+                    return None;
+                }
                 if num == field_num {
                     return Some(&buf[pos..pos + len]);
                 }
@@ -266,10 +267,7 @@ pub fn decompress(raw: &[u8]) -> Vec<u8> {
         if std::io::Read::read_to_end(&mut d, &mut buf).is_ok() {
             return buf;
         }
-    } else if raw.len() >= 2
-        && raw[0] == 0x78
-        && matches!(raw[1], 0x01 | 0x5e | 0x9c | 0xda)
-    {
+    } else if raw.len() >= 2 && raw[0] == 0x78 && matches!(raw[1], 0x01 | 0x5e | 0x9c | 0xda) {
         let mut d = flate2::read::ZlibDecoder::new(std::io::Cursor::new(raw));
         let mut buf = Vec::new();
         if std::io::Read::read_to_end(&mut d, &mut buf).is_ok() {
@@ -302,7 +300,13 @@ pub fn str_to_ts(date: &str) -> Result<i64, chrono::ParseError> {
 
 /// Generate a new CloudKit record name in `Reminder/UUID` format.
 pub fn new_record_name() -> String {
-    format!("Reminder/{}", uuid::Uuid::new_v4().as_hyphenated().to_string().to_uppercase())
+    format!(
+        "Reminder/{}",
+        uuid::Uuid::new_v4()
+            .as_hyphenated()
+            .to_string()
+            .to_uppercase()
+    )
 }
 
 #[cfg(test)]

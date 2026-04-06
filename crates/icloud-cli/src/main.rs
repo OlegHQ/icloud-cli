@@ -1,3 +1,4 @@
+mod cmd_bash;
 mod cmd_hme;
 mod cmd_notes;
 mod cmd_reminders;
@@ -7,11 +8,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use icloud_api::notes::{NotesStore, NotesSyncEngine};
 use icloud_api::reminders::{RemindersStore, SyncEngine};
 use icloud_api::session::{
     default_reminders_db_path, default_session_path, load_session, save_session, SecretsBackend,
 };
-use icloud_api::notes::{NotesStore, NotesSyncEngine};
 use icloud_api::Result as IResult;
 use icloud_api::{is_cache_fresh, AuthFlow};
 
@@ -28,9 +29,16 @@ const EXIT_UPSTREAM: i32 = 4;
 
 fn exit_code(e: &icloud_api::Error) -> i32 {
     match e {
-        icloud_api::Error::Auth(_) | icloud_api::Error::Session(_) | icloud_api::Error::Keyring(_) => EXIT_AUTH,
+        icloud_api::Error::Auth(_)
+        | icloud_api::Error::Session(_)
+        | icloud_api::Error::Keyring(_) => EXIT_AUTH,
         icloud_api::Error::Reminders(msg) | icloud_api::Error::Notes(msg)
-            if msg.contains("not found") || msg.contains("no changes") || msg.contains("missing") => EXIT_USAGE,
+            if msg.contains("not found")
+                || msg.contains("no changes")
+                || msg.contains("missing") =>
+        {
+            EXIT_USAGE
+        }
         _ => EXIT_UPSTREAM,
     }
 }
@@ -73,7 +81,9 @@ impl NotesArgs {
         self.sess.path()
     }
     pub(crate) fn db_path(&self) -> PathBuf {
-        self.db.clone().unwrap_or_else(icloud_api::session::default_notes_db_path)
+        self.db
+            .clone()
+            .unwrap_or_else(icloud_api::session::default_notes_db_path)
     }
 }
 
@@ -89,10 +99,20 @@ impl RemindersArgs {
 // ── CLI definition ─────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "icloud", version, about = "CLI for iCloud Reminders, Notes, and Hide My Email")]
+#[command(
+    name = "icloud",
+    version,
+    about = "CLI for iCloud Reminders, Notes, and Hide My Email"
+)]
 struct Cli {
     /// Output JSON to stdout for scripts and agents.
-    #[arg(long, global = true, alias = "json-output", alias = "jsonOutput", short = 'j')]
+    #[arg(
+        long,
+        global = true,
+        alias = "json-output",
+        alias = "jsonOutput",
+        short = 'j'
+    )]
     json: bool,
 
     /// Emit stable tab-separated output for piping.
@@ -172,6 +192,23 @@ enum Command {
     /// Manage Hide My Email aliases (iCloud+ required).
     #[command(subcommand)]
     Hme(HmeCmd),
+    /// Run bash (just-bash) against the iCloud virtual filesystem.
+    Bash {
+        #[command(flatten)]
+        sess: SessionArg,
+        /// Notes database path.
+        #[arg(long)]
+        notes_db: Option<PathBuf>,
+        /// Reminders database path.
+        #[arg(long)]
+        reminders_db: Option<PathBuf>,
+        /// Execute a one-line script (same as `bash -c`).
+        #[arg(short = 'c', long)]
+        command: Option<String>,
+        /// Optional script file (use `-` for stdin when no `-c`).
+        #[arg(value_name = "SCRIPT")]
+        script: Option<PathBuf>,
+    },
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -236,8 +273,8 @@ macro_rules! open_service {
                 Ok(Self { store, engine })
             }
 
-            pub(crate) fn save(&self) -> IResult<()> {
-                self.store.save_cache(&self.engine.cache)
+            pub(crate) fn save(&mut self) -> IResult<()> {
+                self.store.save_cache(&mut self.engine.cache)
             }
         }
     };
@@ -287,15 +324,22 @@ pub(crate) fn resolve_due_date(input: &str) -> String {
     let today = chrono::Local::now().date_naive();
     match input.to_ascii_lowercase().as_str() {
         "today" => today.format("%Y-%m-%d").to_string(),
-        "tomorrow" => (today + chrono::Days::new(1)).format("%Y-%m-%d").to_string(),
-        "yesterday" => (today - chrono::Days::new(1)).format("%Y-%m-%d").to_string(),
+        "tomorrow" => (today + chrono::Days::new(1))
+            .format("%Y-%m-%d")
+            .to_string(),
+        "yesterday" => (today - chrono::Days::new(1))
+            .format("%Y-%m-%d")
+            .to_string(),
         _ => input.to_string(),
     }
 }
 
 // ── Smart date filter resolution ──────────────────────────
 
-pub(crate) fn resolve_date_filter(filter: Option<&str>, all: bool) -> (bool, Option<String>, Option<String>) {
+pub(crate) fn resolve_date_filter(
+    filter: Option<&str>,
+    all: bool,
+) -> (bool, Option<String>, Option<String>) {
     if all {
         return (true, None, None);
     }
@@ -310,31 +354,37 @@ pub(crate) fn resolve_date_filter(filter: Option<&str>, all: bool) -> (bool, Opt
             (false, None, Some(d))
         }
         "tomorrow" | "t" => {
-            let d = (today + chrono::Days::new(1)).format("%Y-%m-%d").to_string();
+            let d = (today + chrono::Days::new(1))
+                .format("%Y-%m-%d")
+                .to_string();
             (false, Some(d.clone()), Some(d))
         }
         "week" | "w" => {
             let from = today.format("%Y-%m-%d").to_string();
-            let to = (today + chrono::Days::new(7)).format("%Y-%m-%d").to_string();
+            let to = (today + chrono::Days::new(7))
+                .format("%Y-%m-%d")
+                .to_string();
             (false, Some(from), Some(to))
         }
         "overdue" | "o" => {
-            let to = (today - chrono::Days::new(1)).format("%Y-%m-%d").to_string();
+            let to = (today - chrono::Days::new(1))
+                .format("%Y-%m-%d")
+                .to_string();
             (false, None, Some(to))
         }
         "upcoming" | "u" => {
             // All incomplete with a due date (no date bounds, just filter for has-due)
             (false, Some("0000-01-01".to_string()), None)
         }
-        "completed" | "done" | "c" => {
-            (true, None, None)
-        }
-        "all" | "a" => {
-            (true, None, None)
-        }
+        "completed" | "done" | "c" => (true, None, None),
+        "all" | "a" => (true, None, None),
         date_str => {
             // Treat as a specific date
-            (false, Some(date_str.to_string()), Some(date_str.to_string()))
+            (
+                false,
+                Some(date_str.to_string()),
+                Some(date_str.to_string()),
+            )
         }
     }
 }
@@ -390,13 +440,36 @@ async fn run(cli: Cli, out: OutputMode) -> IResult<()> {
     let max_age = cli.max_age;
 
     match cli.command {
-        Command::Login { username, password, code, sess } => {
-            handle_login(out, secrets, username, password, code, sess).await
-        }
+        Command::Login {
+            username,
+            password,
+            code,
+            sess,
+        } => handle_login(out, secrets, username, password, code, sess).await,
         Command::Whoami { sess } => handle_whoami(out, secrets, sess).await,
-        Command::Reminders(sub) => cmd_reminders::handle_reminders(out, secrets, max_age, sub).await,
+        Command::Reminders(sub) => {
+            cmd_reminders::handle_reminders(out, secrets, max_age, sub).await
+        }
         Command::Notes(sub) => cmd_notes::handle_notes(out, secrets, max_age, sub).await,
         Command::Hme(sub) => cmd_hme::handle_hme(json, secrets, sub).await,
+        Command::Bash {
+            sess,
+            notes_db,
+            reminders_db,
+            command,
+            script,
+        } => {
+            cmd_bash::run_bash(
+                secrets,
+                max_age,
+                sess,
+                notes_db,
+                reminders_db,
+                command,
+                script,
+            )
+            .await
+        }
     }
 }
 
@@ -436,8 +509,11 @@ async fn handle_login(
     }
     let data = auth.finish_login().await?;
     save_session(&session_path, &data, secrets)?;
-    print_ok_with(json, &format!("Logged in. Session saved to {}", session_path.display()),
-        &serde_json::json!({"session": session_path.display().to_string(), "ck_base_url": data.ck_base_url}));
+    print_ok_with(
+        json,
+        &format!("Logged in. Session saved to {}", session_path.display()),
+        &serde_json::json!({"session": session_path.display().to_string(), "ck_base_url": data.ck_base_url}),
+    );
     if out.is_human() {
         hint(&[
             "icloud whoami              — verify session",
@@ -452,7 +528,9 @@ async fn handle_whoami(out: OutputMode, secrets: SecretsBackend, sess: SessionAr
     let json = out.json;
     let session_path = sess.path();
     let session_data = load_session(&session_path, secrets)?;
-    let ok = AuthFlow::validate_session(&session_data).await.unwrap_or(false);
+    let ok = AuthFlow::validate_session(&session_data)
+        .await
+        .unwrap_or(false);
     print_whoami(json, &session_path, &session_data, ok);
     if out.is_human() && !ok {
         hint(&["icloud login               — re-authenticate"]);

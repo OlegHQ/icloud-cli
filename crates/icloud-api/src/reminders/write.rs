@@ -144,12 +144,9 @@ impl SyncEngine {
             .reminders
             .get_mut(&full)
             .ok_or_else(|| Error::Reminders("cache miss".into()))?;
-        let ct = rd
-            .change_tag
-            .clone()
-            .ok_or_else(|| {
-                Error::Reminders(format!("missing change tag for '{partial}' — run sync"))
-            })?;
+        let ct = rd.change_tag.clone().ok_or_else(|| {
+            Error::Reminders(format!("missing change tag for '{partial}' — run sync"))
+        })?;
         let now = chrono::Utc::now().timestamp_millis();
         let op = json!({
             "operationType": "update",
@@ -212,12 +209,9 @@ impl SyncEngine {
             .reminders
             .get_mut(&full)
             .ok_or_else(|| Error::Reminders("cache miss".into()))?;
-        let ct = rd
-            .change_tag
-            .clone()
-            .ok_or_else(|| {
-                Error::Reminders(format!("missing change tag for '{partial}' — run sync"))
-            })?;
+        let ct = rd.change_tag.clone().ok_or_else(|| {
+            Error::Reminders(format!("missing change tag for '{partial}' — run sync"))
+        })?;
         let op = json!({
             "operationType": "update",
             "record": {
@@ -346,8 +340,7 @@ impl SyncEngine {
         notes: Option<&str>,
         priority: Option<&str>,
     ) -> Result<()> {
-        if title.is_none() && due.is_none() && !clear_due && notes.is_none() && priority.is_none()
-        {
+        if title.is_none() && due.is_none() && !clear_due && notes.is_none() && priority.is_none() {
             return Err(Error::Reminders(
                 "no changes specified (title/due/clear-due/notes/priority)".into(),
             ));
