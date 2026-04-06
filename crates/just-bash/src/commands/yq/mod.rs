@@ -493,41 +493,15 @@ impl Command for YqCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::{FileSystem, InMemoryFs};
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use crate::commands::test_utils;
+    use crate::fs::FileSystem;
 
     fn make_ctx(args: &[&str], stdin: &str) -> CommandContext {
-        CommandContext {
-            args: args.iter().map(|arg| arg.to_string()).collect(),
-            stdin: stdin.to_string(),
-            cwd: "/".to_string(),
-            env: HashMap::new(),
-            fs: Arc::new(InMemoryFs::new()),
-            exec_fn: None,
-            fetch_fn: None,
-        }
+        test_utils::make_ctx_with_stdin(args.to_vec(), stdin)
     }
 
-    async fn make_ctx_with_files(
-        args: &[&str],
-        stdin: &str,
-        files: &[(&str, &str)],
-    ) -> CommandContext {
-        let fs = Arc::new(InMemoryFs::new());
-        for (path, content) in files {
-            fs.write_file(path, content.as_bytes()).await.unwrap();
-        }
-
-        CommandContext {
-            args: args.iter().map(|arg| arg.to_string()).collect(),
-            stdin: stdin.to_string(),
-            cwd: "/".to_string(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
+    async fn make_ctx_with_files(args: &[&str], stdin: &str, files: &[(&str, &str)]) -> CommandContext {
+        test_utils::make_ctx_with_stdin_and_files(args.to_vec(), stdin, files.to_vec()).await
     }
 
     #[tokio::test(flavor = "multi_thread")]

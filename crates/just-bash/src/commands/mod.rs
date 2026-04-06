@@ -78,3 +78,6 @@ pub mod xargs;
 pub mod yq;
 
 pub use types::{Command, CommandContext, CommandResult};
+
+#[cfg(test)]
+pub mod test_utils;

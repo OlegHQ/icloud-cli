@@ -231,21 +231,10 @@ impl Command for PrintenvCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::InMemoryFs;
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use crate::commands::test_utils::*;
 
     fn make_ctx(args: Vec<&str>, env: HashMap<String, String>) -> CommandContext {
-        let fs = Arc::new(InMemoryFs::new());
-        CommandContext {
-            args: args.into_iter().map(String::from).collect(),
-            stdin: String::new(),
-            cwd: "/".to_string(),
-            env,
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
+        make_ctx_with_env(args, env)
     }
 
     #[tokio::test(flavor = "multi_thread")]

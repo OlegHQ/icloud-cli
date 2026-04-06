@@ -583,21 +583,12 @@ async fn traverse_depth_first(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::test_utils::{self, *};
     use crate::fs::{FileSystem, InMemoryFs, MkdirOptions};
-    use std::collections::HashMap;
-    use std::sync::Arc;
     use std::time::{Duration, SystemTime};
 
     fn make_ctx(fs: Arc<InMemoryFs>, args: &[&str]) -> CommandContext {
-        CommandContext {
-            args: args.iter().map(|s| s.to_string()).collect(),
-            stdin: String::new(),
-            cwd: "/".to_string(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
+        test_utils::make_ctx_with_fs(args.iter().map(|s| s.as_ref()).collect(), fs)
     }
 
     fn sorted_lines(s: &str) -> Vec<&str> {

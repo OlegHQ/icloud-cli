@@ -45,21 +45,12 @@ impl Command for PwdCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::InMemoryFs;
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use crate::commands::test_utils::*;
 
     fn make_ctx(args: Vec<&str>, cwd: &str) -> CommandContext {
-        let fs = Arc::new(InMemoryFs::new());
-        CommandContext {
-            args: args.into_iter().map(String::from).collect(),
-            stdin: String::new(),
-            cwd: cwd.to_string(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
+        let mut ctx = crate::commands::test_utils::make_ctx(args);
+        ctx.cwd = cwd.to_string();
+        ctx
     }
 
     #[tokio::test(flavor = "multi_thread")]

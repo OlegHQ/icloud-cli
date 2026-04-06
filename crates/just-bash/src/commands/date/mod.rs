@@ -300,22 +300,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::InMemoryFs;
-    use std::collections::HashMap;
-    use std::sync::Arc;
-
-    fn make_ctx(args: Vec<&str>) -> CommandContext {
-        let fs = Arc::new(InMemoryFs::new());
-        CommandContext {
-            args: args.into_iter().map(String::from).collect(),
-            stdin: String::new(),
-            cwd: "/".into(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
-    }
+    use crate::commands::test_utils::*;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_date_year() {

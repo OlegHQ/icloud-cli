@@ -132,25 +132,8 @@ impl Command for StatCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::{FileSystem, InMemoryFs};
-    use std::collections::HashMap;
-    use std::sync::Arc;
-
-    fn make_ctx_with_fs(args: Vec<&str>, fs: Arc<InMemoryFs>) -> CommandContext {
-        CommandContext {
-            args: args.into_iter().map(String::from).collect(),
-            stdin: String::new(),
-            cwd: "/".into(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
-    }
-
-    fn make_ctx(args: Vec<&str>) -> CommandContext {
-        make_ctx_with_fs(args, Arc::new(InMemoryFs::new()))
-    }
+    use crate::commands::test_utils::*;
+    use crate::fs::FileSystem;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_stat_file() {

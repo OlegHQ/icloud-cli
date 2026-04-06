@@ -107,25 +107,8 @@ impl Command for MvCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::{FileSystem, InMemoryFs, MkdirOptions};
-    use std::collections::HashMap;
-    use std::sync::Arc;
-
-    async fn make_ctx_with_files(args: Vec<&str>, files: Vec<(&str, &str)>) -> CommandContext {
-        let fs = Arc::new(InMemoryFs::new());
-        for (path, content) in files {
-            fs.write_file(path, content.as_bytes()).await.unwrap();
-        }
-        CommandContext {
-            args: args.into_iter().map(String::from).collect(),
-            stdin: String::new(),
-            cwd: "/".to_string(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
-    }
+    use crate::commands::test_utils::*;
+    use crate::fs::{FileSystem, MkdirOptions};
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_mv_rename() {

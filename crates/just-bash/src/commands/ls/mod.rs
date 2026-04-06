@@ -250,31 +250,16 @@ impl Command for LsCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::{FileSystem, InMemoryFs, MkdirOptions};
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use crate::commands::test_utils::*;
+    use crate::fs::{FileSystem, MkdirOptions};
 
     async fn make_ctx_with_structure(args: Vec<&str>) -> CommandContext {
         let fs = Arc::new(InMemoryFs::new());
-        fs.mkdir("/testdir", &MkdirOptions { recursive: false })
-            .await
-            .unwrap();
-        fs.write_file("/testdir/file1.txt", b"content1")
-            .await
-            .unwrap();
-        fs.write_file("/testdir/file2.txt", b"content2content2")
-            .await
-            .unwrap();
+        fs.mkdir("/testdir", &MkdirOptions { recursive: false }).await.unwrap();
+        fs.write_file("/testdir/file1.txt", b"content1").await.unwrap();
+        fs.write_file("/testdir/file2.txt", b"content2content2").await.unwrap();
         fs.write_file("/testdir/.hidden", b"hidden").await.unwrap();
-        CommandContext {
-            args: args.into_iter().map(String::from).collect(),
-            stdin: String::new(),
-            cwd: "/".to_string(),
-            env: HashMap::new(),
-            fs,
-            exec_fn: None,
-            fetch_fn: None,
-        }
+        make_ctx_with_fs(args, fs)
     }
 
     #[tokio::test(flavor = "multi_thread")]
