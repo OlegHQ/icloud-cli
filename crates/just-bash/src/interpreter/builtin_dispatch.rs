@@ -3,6 +3,7 @@
 //! Handles dispatch of built-in shell commands like export, unset, cd, etc.
 //! Separated from interpreter.rs for modularity.
 
+use crate::interpreter::builtins::handle_shopt;
 use crate::interpreter::helpers::result::{failure, test_result, OK};
 use crate::interpreter::helpers::shell_constants::SHELL_BUILTINS;
 use crate::interpreter::types::{ExecResult, InterpreterState};
@@ -391,56 +392,8 @@ fn handle_shift_stub(state: &mut InterpreterState, args: &[String]) -> ExecResul
 }
 
 fn handle_shopt_stub(state: &mut InterpreterState, args: &[String]) -> ExecResult {
-    let mut set_mode = false;
-    let mut unset_mode = false;
-    let mut options: Vec<&str> = Vec::new();
-
-    for arg in args {
-        match arg.as_str() {
-            "-s" => set_mode = true,
-            "-u" => unset_mode = true,
-            _ => options.push(arg),
-        }
-    }
-
-    for opt in options {
-        match opt {
-            "extglob" => {
-                if set_mode {
-                    state.shopt_options.extglob = true;
-                }
-                if unset_mode {
-                    state.shopt_options.extglob = false;
-                }
-            }
-            "nullglob" => {
-                if set_mode {
-                    state.shopt_options.nullglob = true;
-                }
-                if unset_mode {
-                    state.shopt_options.nullglob = false;
-                }
-            }
-            "dotglob" => {
-                if set_mode {
-                    state.shopt_options.dotglob = true;
-                }
-                if unset_mode {
-                    state.shopt_options.dotglob = false;
-                }
-            }
-            "globstar" => {
-                if set_mode {
-                    state.shopt_options.globstar = true;
-                }
-                if unset_mode {
-                    state.shopt_options.globstar = false;
-                }
-            }
-            _ => {}
-        }
-    }
-    OK
+    let r = handle_shopt(state, args);
+    ExecResult::new(r.stdout, r.stderr, r.exit_code)
 }
 
 fn handle_help_stub(_state: &InterpreterState, _args: &[String]) -> ExecResult {

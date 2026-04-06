@@ -1,6 +1,7 @@
 //! Interpreter helper modules
 
 pub mod array;
+pub mod builtin_args;
 pub mod condition;
 pub mod error_utils;
 pub mod file_tests;
@@ -24,6 +25,7 @@ pub mod word_parts;
 pub mod xtrace;
 
 pub use array::*;
+pub use builtin_args::*;
 pub use condition::*;
 pub use error_utils::*;
 pub use file_tests::*;

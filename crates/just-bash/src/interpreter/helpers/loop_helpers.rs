@@ -3,10 +3,40 @@
 //! Consolidates the repeated error handling logic used in all loop constructs
 //! (for, c-style for, while, until).
 
-use crate::interpreter::errors::{ControlFlowError, InterpreterError};
+use crate::interpreter::errors::{ControlFlowError, ExitError, InterpreterError};
 
 #[cfg(test)]
 use crate::interpreter::errors::{BreakError, ContinueError, ReturnError};
+
+/// Parse the optional numeric level argument for break/continue.
+///
+/// Returns `Ok(levels)` or `Err(InterpreterError)` carrying the appropriate
+/// exit/fatal error.
+pub fn parse_loop_levels(
+    cmd_name: &str,
+    args: &[String],
+) -> Result<u32, InterpreterError> {
+    if args.len() > 1 {
+        return Err(ExitError::new(
+            1,
+            String::new(),
+            format!("bash: {}: too many arguments\n", cmd_name),
+        )
+        .into());
+    }
+    if args.is_empty() {
+        return Ok(1);
+    }
+    match args[0].parse::<i32>() {
+        Ok(n) if n >= 1 => Ok(n as u32),
+        _ => Err(ExitError::new(
+            128,
+            String::new(),
+            format!("bash: {}: {}: numeric argument required\n", cmd_name, args[0]),
+        )
+        .into()),
+    }
+}
 
 /// Action to take after handling a loop error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
