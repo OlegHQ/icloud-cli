@@ -7,7 +7,7 @@ description = "Virtual bash filesystem over iCloud Notes, Reminders, and Hide My
 
 [dependencies]
 icloud-api = { path = "../icloud-api" }
-just-bash = { path = "../just-bash" }
+just-bash = { path = "../../just-bash" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
