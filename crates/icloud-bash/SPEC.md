@@ -2,7 +2,7 @@
 
 ## Overview
 
-`icloud-bash` implements the `just-bash` `FileSystem` trait to expose iCloud
+`icloud-bash` implements the **bashbox** `FileSystem` trait to expose iCloud
 Notes, Reminders, and Hide My Email as a POSIX-like virtual filesystem.  Agents
 run shell commands against this VFS; every legal file operation maps to a
 CloudKit API call.  Illegal operations return appropriate POSIX errors.
@@ -282,7 +282,7 @@ Reverse mapping (filename → title): strip `.md`, reverse U+2215 → `/`.
 ## Security Constraints
 
 1. **No shell escape**: Commands cannot exec real binaries. All commands route
-   through `just-bash`'s command registry.
+   through bashbox's command registry.
 2. **No network access** from bash (curl/wget disabled or limited to allow-list).
 3. **No access outside VFS**: Paths like `/etc/passwd`, `/home/...` return `ENOENT`.
 4. **Execution limits**: Max 100,000 commands, 1,000,000 iterations, 1,000
@@ -525,7 +525,7 @@ This is safe because:
 
 ### `/tmp/` Isolation
 
-Each bash session gets a private `/tmp/` backed by `just-bash`'s `InMemoryFs`.
+Each bash session gets a private `/tmp/` backed by bashbox's `InMemoryFs`.
 Sessions cannot see each other's temp files.
 
 - `echo "draft" > /tmp/draft.md` in session A is invisible to session B

@@ -36,8 +36,9 @@ This repository is a **Rust** command-line tool for **iCloud** features that mat
 
 ## Module boundaries
 
-- `crates/icloud-api`: HTTP client, serde types, errors (`thiserror`), Reminders / Notes / Hide My Email clients.
-- `crates/icloud-cli`: `clap` commands, config path resolution, human vs JSON rendering.
+- `crates/icloud-api`: HTTP client, serde types, errors (`thiserror`), Reminders / Notes / Hide My Email clients, sync engines, cache persistence.
+- `crates/icloud-cli`: `clap` commands, config path resolution, human vs JSON rendering, `icloud bash` session wiring.
+- `crates/icloud-bash`: VFS (`ICloudFs`), path mapping, frontmatter, filename sanitization; depends on `icloud-api` and **bashbox** only.
 
 ## Fragility policy
 
@@ -56,7 +57,7 @@ This repository is a **Rust** command-line tool for **iCloud** features that mat
 ## Progress tracking
 
 - Maintain a repo-root `PROGRESS.md` as the running handoff log for cross-session work.
-- After any substantial refactor, vendored `just-bash` cleanup, or `icloud bash` architecture change, update `PROGRESS.md` with:
+- After any substantial refactor, bashbox integration change, or `icloud bash` / VFS architecture change, update `PROGRESS.md` with:
   - what changed
   - what was verified
   - what remains broken or risky
@@ -71,11 +72,11 @@ Unofficial clients report roughly **~5 generated addresses per 30 minutes** per 
 
 ### Goal
 
-`icloud bash -c "COMMAND"` exposes iCloud data as a POSIX virtual filesystem that LLM agents can traverse with standard shell commands. Powered by [just-bash](https://github.com/arthur-zhang/just-bash) (pure-Rust bash interpreter with pluggable `FileSystem` trait).
+`icloud bash -c "COMMAND"` (and optional script path) exposes iCloud data as a POSIX virtual filesystem for shell-style exploration and scripting. The embedded interpreter is **[bashbox](https://github.com/OlegHQ/bashbox)** (Rust bash implementation with a pluggable `FileSystem` trait), pinned as a git dependency in `crates/icloud-cli/Cargo.toml` and `crates/icloud-bash/Cargo.toml`.
 
 ### Specification
 
-Full spec lives in `crates/icloud-bash/SPEC.md`. Golden test suite: `crates/icloud-bash/tests/golden_vfs.rs` (126 tests).
+Full layout and operation mapping: `crates/icloud-bash/SPEC.md`. The spec’s concurrency notes still apply at the CloudKit / cache layer even though the interpreter crate is now bashbox.
 
 ### Filesystem Layout
 
@@ -87,85 +88,47 @@ Full spec lives in `crates/icloud-bash/SPEC.md`. Golden test suite: `crates/iclo
 └── tmp/                          # Per-session scratch (in-memory)
 ```
 
-### Crate Structure
+### Crate structure
 
 ```
 crates/icloud-bash/
-├── Cargo.toml          # depends on icloud-api + just-bash
-├── SPEC.md             # Full specification (filesystem layout, operations, concurrency)
+├── Cargo.toml          # icloud-api + bashbox (git)
+├── SPEC.md             # VFS layout, operations, concurrency
 ├── src/
 │   ├── lib.rs
-│   ├── vfs.rs          # ICloudFs — implements just_bash::fs::FileSystem
-│   ├── frontmatter.rs  # YAML frontmatter parse/render for notes + reminders
-│   ├── pathmap.rs      # VFS path ↔ CloudKit record ID resolution
-│   └── sanitize.rs     # Filename ↔ title conversion (slash, collision, truncation)
+│   ├── vfs.rs          # ICloudFs — implements bashbox::fs::FileSystem
+│   ├── frontmatter.rs
+│   ├── pathmap.rs
+│   └── sanitize.rs
 └── tests/
-    └── golden_vfs.rs   # 126 golden tests (spec-driven)
+    └── golden_vfs.rs   # smoke tests: paths, frontmatter, trivial Bash on InMemoryFs (5 tests; 1 ignored placeholder)
 ```
 
-### Implementation Plan
+### Implementation status (summary)
 
-**Phase 1 — Path resolution + read-only VFS** (no CloudKit writes)
+- **`ICloudFs`** in `vfs.rs` composes `NotesSyncEngine`, `SyncEngine`, `HideMyEmailClient`, and `bashbox::InMemoryFs` (for `/tmp` and passthrough paths). Read/write/delete/mkdir/mv/cp and related `FileSystem` methods are implemented for iCloud paths where the API supports them; see `SPEC.md` for the intended matrix.
+- **CLI** (`icloud-cli`): loads session, opens engines, builds `Bash::new(BashOptions { fs: Some(arc_icloud_fs), ... })`, runs `-c` or script input. Sets `HOME=/`, `USER=icloud`, `ICLOUD_NOTES_COUNT`, `ICLOUD_REMINDERS_COUNT`, and `ICLOUD_SESSION`.
+- **Retries / conflict handling** and **multi-process stress tests** remain areas to harden in `icloud-api` / CLI usage; `PROGRESS.md` should track concrete follow-ups.
 
-1. **`sanitize.rs`**: Implement `title_to_filename()` and `filename_to_title()`. Handle `/` → `∕`, collision suffixes ` (2)`, truncation to 255 bytes. Unit tests.
-2. **`frontmatter.rs`**: Implement `render_note(NoteData, body) → String` and `render_reminder(ReminderData) → String`. Parse writable reminder frontmatter on write. Unit tests.
-3. **`pathmap.rs`**: Route VFS paths to the correct service + record. Parse `/Notes/<folder>/<file>.md` into `(Service::Notes, folder_id, record_id)`. Handle `/tmp/`, `/HideMyEmail/`, root. Classify each path as `File | Dir | NotFound | Invalid`. Unit tests.
-4. **`vfs.rs`**: Implement `ICloudFs` struct holding `NotesSyncEngine`, `SyncEngine`, `HideMyEmailClient`, and `InMemoryFs` (for `/tmp/`). Implement read-only `FileSystem` methods: `read_file`, `readdir`, `readdir_with_file_types`, `stat`, `lstat`, `exists`, `realpath`, `resolve_path`, `get_all_paths`. Wire up the 22-method trait; return `EROFS` / `EACCES` for unimplemented writes.
-5. **Wire into CLI**: Add `icloud bash -c "COMMAND"` subcommand to `icloud-cli`. Load session, sync engines, create `ICloudFs`, pass to `just_bash::Bash::new(fs)`, execute, print output.
+### Concurrency model (unchanged intent)
 
-**Phase 2 — Write operations**
+**Daemonless.** Each `icloud bash` process loads cache, syncs if needed, and talks to CloudKit on writes; redb locking and merge behavior live in `icloud-api`. For the full narrative, see the “Concurrency Model” section in `crates/icloud-bash/SPEC.md`.
 
-6. **`write_file`**: Parse path → service. For notes: strip frontmatter from input, call `create_note` (new) or `update_note` (existing). For reminders: parse frontmatter for writable fields, call `add_reminder` (new) or `edit_reminder` (existing). For `/tmp/`: delegate to `InMemoryFs`.
-7. **`append_file`**: Read current content, append, write back (notes/reminders). Delegate to `InMemoryFs` for `/tmp/`.
-8. **`rm`**: Map to `delete_note` / `delete_reminder`. Handle `recursive` for directories (delete all items then folder/list).
-9. **`mkdir`**: Map to reminder list creation (`create_list`). For notes folders: create via placeholder or cache manipulation.
-10. **`mv`**: Within-service same folder = rename (update title). Cross-folder same service = `move_note` or error. Cross-service = `EXDEV`.
-11. **`cp`**: Read source, create at destination. Allow `/tmp/` as neutral ground between services.
-12. **`chmod`**, **`symlink`**, **`link`**, **`utimes`**: `chmod` = no-op on iCloud, real on `/tmp/`. `symlink` only in `/tmp/`. `link` = `EACCES` everywhere. `utimes` = no-op on iCloud.
+### Module boundaries (bash stack)
 
-**Phase 3 — Concurrency + conflict handling**
+- **`icloud-api`**: CloudKit protocol, sync engines, cache, persistence. No knowledge of bash or VFS paths.
+- **`icloud-bash`**: `FileSystem` implementation and iCloud path semantics only.
+- **`icloud-cli`**: User-facing `icloud bash` command and wiring.
+- **`bashbox`**: Upstream interpreter. Do **not** fork in this repo for iCloud-specific behavior; extend `icloud-bash` / `icloud-cli` instead, or contribute generic fixes upstream.
 
-13. **Shared read lock on cache load**: Change `RedbStore::load_cache` to use `lock_shared()` instead of `lock_exclusive()`.
-14. **Save-phase merge**: On save, detect sync token divergence. If another process advanced the token, write only our dirty items (don't overwrite their sync progress).
-15. **CloudKit conflict retry**: Wrap write operations in `write_with_retry` (detect stale `recordChangeTag`, re-sync, retry up to 3 times). Map `RECORD_NOT_FOUND` to `ENOENT`.
-16. **Integration test**: Multi-process test spawning 5 concurrent `icloud bash` processes doing reads + writes. Verify no data loss, no deadlocks.
+### Testing strategy
 
-**Phase 4 — Polish**
-
-17. **Environment variables**: Set `HOME=/`, `USER=icloud`, `ICLOUD_NOTES_COUNT`, `ICLOUD_REMINDERS_COUNT` in bash environment.
-18. **Error messages**: Map all CloudKit errors to POSIX errors with helpful messages (session expired → `EIO` with hint).
-19. **Script file support**: `icloud bash script.sh` reads and executes a file.
-20. **Size limits**: Reject writes > 1MB for notes/reminders. No limit for `/tmp/`.
-
-### Concurrency Model
-
-**Daemonless**. Each `icloud bash` process is self-contained:
-
-- **Load**: shared read lock on redb (~1ms), then release. Sync from CloudKit if stale (no lock held).
-- **Operate**: all reads from in-memory cache (zero I/O). Writes go to CloudKit directly (optimistic — `recordChangeTag` as version).
-- **Save**: exclusive lock on redb only for the write transaction (~1ms). Merge with other processes' changes via sync token comparison.
-
-CloudKit is the conflict arbiter. Two processes writing different records: no contention. Same record: loser re-syncs and retries (3 attempts). See `SPEC.md § Concurrency Model` for full details.
-
-### Module Boundaries
-
-- **`icloud-api`**: All CloudKit protocol, sync engines, cache, persistence. No bash/VFS knowledge.
-- **`icloud-bash`**: VFS implementation (`FileSystem` trait), frontmatter, path mapping, filename sanitization. Depends on `icloud-api` for engines and `just-bash` for the bash interpreter.
-- **`icloud-cli`**: CLI entry point for `icloud bash` subcommand. Wires session loading, engine creation, and VFS together.
-- **`just-bash`**: Treat the vendored fork as a standalone generic crate. Do **not** add `icloud-*` dependencies, iCloud-specific types, or Apple service semantics to it. Generic interpreter/FS fixes belong in `just-bash`; iCloud behavior stays in `icloud-bash` / `icloud-cli`.
-
-### Testing Strategy
-
-- **Unit tests** in each `icloud-bash` module (sanitize, frontmatter, pathmap)
-- **Golden test suite** (`golden_vfs.rs`): 126 tests covering every operation, error, edge case, and concurrency scenario against mock backends
-- **Integration tests**: Full `just-bash` execution against `ICloudFs` with mock CloudKit responses
-- **No real CloudKit calls in tests** — all mocked. Real integration tested manually.
+- **Unit tests** in `icloud-bash` modules (`sanitize`, `frontmatter`, `pathmap`, `vfs` as applicable).
+- **`tests/golden_vfs.rs`**: lightweight integration checks (path normalization, classification, frontmatter roundtrip, trivial `Bash` run on `InMemoryFs`).
+- **No live CloudKit in CI** — use fixtures in `icloud-api` where present; exercise real accounts manually.
 
 ### Security
 
-- No shell escape — all commands route through `just-bash` command registry (70+ builtins, no real exec)
-- No network access from bash (curl/wget disabled or allow-listed)
-- No access outside VFS (`/etc/passwd` → `ENOENT`)
-- Path traversal blocked (`.` / `..` resolved within VFS)
-- Execution limits: 100K commands, 1M iterations, 1K recursion depth per session
-- File size limit: 1MB per iCloud write
+- No arbitrary process `exec` from the embedded shell; behavior is defined by bashbox’s restricted/builtin surface (configure or document allow-lists there).
+- Treat session paths and caches as secrets (`AGENTS.md` security section).
+- Path traversal stays within the VFS root; large writes are capped (1MB per iCloud write in `vfs.rs`).
