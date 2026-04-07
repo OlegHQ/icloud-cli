@@ -11,6 +11,7 @@
 use brush_parser::ast as bast;
 use crate::interpreter::expansion::pattern::pattern_to_regex;
 use crate::interpreter::types::InterpreterState;
+use crate::shell::pattern_utils;
 use regex_lite::Regex;
 
 /// Match a value against a glob pattern.
@@ -268,7 +269,7 @@ fn convert_posix_char_class(chars: &[char], start_index: usize) -> (String, usiz
             let rest: String = chars[i + 2..].iter().collect();
             if let Some(end_pos) = rest.find(":]") {
                 let class_name: String = chars[i + 2..i + 2 + end_pos].iter().collect();
-                class_content.push_str(&posix_class_to_regex(&class_name));
+                class_content.push_str(pattern_utils::posix_class_to_regex(&class_name));
                 i = i + 2 + end_pos + 2;
                 continue;
             }
@@ -324,26 +325,6 @@ fn convert_posix_char_class(chars: &[char], start_index: usize) -> (String, usiz
     (result, i)
 }
 
-/// Convert POSIX character class name to regex equivalent.
-fn posix_class_to_regex(class_name: &str) -> String {
-    match class_name {
-        "alnum" => "a-zA-Z0-9".to_string(),
-        "alpha" => "a-zA-Z".to_string(),
-        "ascii" => "\\x00-\\x7F".to_string(),
-        "blank" => " \\t".to_string(),
-        "cntrl" => "\\x00-\\x1F\\x7F".to_string(),
-        "digit" => "0-9".to_string(),
-        "graph" => "!-~".to_string(),
-        "lower" => "a-z".to_string(),
-        "print" => " -~".to_string(),
-        "punct" => "!-/:-@\\[-`{-~".to_string(),
-        "space" => " \\t\\n\\r\\f\\v".to_string(),
-        "upper" => "A-Z".to_string(),
-        "word" => "a-zA-Z0-9_".to_string(),
-        "xdigit" => "0-9A-Fa-f".to_string(),
-        _ => String::new(),
-    }
-}
 
 /// Compute the fixed length of a pattern, if it has one.
 /// Returns None if the pattern has variable length (contains *, +, etc.).
@@ -362,13 +343,13 @@ pub fn compute_pattern_length(pattern: &str, extglob: bool) -> Option<usize> {
             && i + 1 < chars.len()
             && chars[i + 1] == '('
         {
-            let close_idx = find_matching_paren(&chars, i + 1);
-            if close_idx.is_some() {
-                let close = close_idx.unwrap();
+            let close_raw = pattern_utils::find_matching_paren(&chars, i + 1);
+            if close_raw != usize::MAX {
+                let close = close_raw;
                 if c == '@' {
                     // @() matches exactly one occurrence - get length of alternatives
                     let content: String = chars[i + 2..close].iter().collect();
-                    let alts = split_extglob_alternatives(&content);
+                    let alts = pattern_utils::split_extglob_alternatives(&content);
                     let alt_lengths: Vec<Option<usize>> = alts
                         .iter()
                         .map(|a| compute_pattern_length(a, extglob))
@@ -398,10 +379,10 @@ pub fn compute_pattern_length(pattern: &str, extglob: bool) -> Option<usize> {
         }
         if c == '[' {
             // Character class matches exactly 1 char
-            let close_idx = find_char_class_end(&chars, i);
-            if close_idx.is_some() {
+            let close_raw = pattern_utils::find_bracket_end(&chars, i);
+            if close_raw != usize::MAX {
                 length += 1;
-                i = close_idx.unwrap() + 1;
+                i = close_raw + 1;
                 continue;
             }
             // No closing bracket - treat as literal
@@ -423,105 +404,7 @@ pub fn compute_pattern_length(pattern: &str, extglob: bool) -> Option<usize> {
     Some(length)
 }
 
-/// Find the matching closing parenthesis, handling nesting.
-fn find_matching_paren(chars: &[char], open_idx: usize) -> Option<usize> {
-    let mut depth = 1;
-    let mut i = open_idx + 1;
-    while i < chars.len() && depth > 0 {
-        let c = chars[i];
-        if c == '\\' {
-            i += 2; // Skip escaped char
-            continue;
-        }
-        if c == '(' {
-            depth += 1;
-        } else if c == ')' {
-            depth -= 1;
-            if depth == 0 {
-                return Some(i);
-            }
-        }
-        i += 1;
-    }
-    None
-}
 
-/// Split extglob pattern content on | handling nested patterns.
-fn split_extglob_alternatives(content: &str) -> Vec<String> {
-    let mut alternatives: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut depth = 0;
-    let chars: Vec<char> = content.chars().collect();
-    let mut i = 0;
-
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '\\' {
-            // Escaped character
-            current.push(c);
-            if i + 1 < chars.len() {
-                current.push(chars[i + 1]);
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        if c == '(' {
-            depth += 1;
-            current.push(c);
-        } else if c == ')' {
-            depth -= 1;
-            current.push(c);
-        } else if c == '|' && depth == 0 {
-            alternatives.push(current);
-            current = String::new();
-        } else {
-            current.push(c);
-        }
-        i += 1;
-    }
-    alternatives.push(current);
-    alternatives
-}
-
-/// Find the end of a character class starting at position i (where chars[i] is '[').
-fn find_char_class_end(chars: &[char], start: usize) -> Option<usize> {
-    let mut i = start + 1;
-
-    // Handle negation
-    if i < chars.len() && chars[i] == '^' {
-        i += 1;
-    }
-
-    // A ] immediately after [ or [^ is literal, not closing
-    if i < chars.len() && chars[i] == ']' {
-        i += 1;
-    }
-
-    while i < chars.len() {
-        // Handle escape sequences - \] should not end the class
-        if chars[i] == '\\' && i + 1 < chars.len() {
-            i += 2;
-            continue;
-        }
-
-        if chars[i] == ']' {
-            return Some(i);
-        }
-
-        // Handle POSIX classes [:name:]
-        if chars[i] == '[' && i + 1 < chars.len() && chars[i + 1] == ':' {
-            let rest: String = chars[i + 2..].iter().collect();
-            if let Some(close_pos) = rest.find(":]") {
-                i = i + 2 + close_pos + 2;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    None
-}
 
 /// Escape regex metacharacters in a string.
 pub fn escape_regex_chars(s: &str) -> String {

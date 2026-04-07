@@ -3,25 +3,12 @@
 //! Handles conversion between Basic Regular Expressions (BRE) and Extended Regular Expressions (ERE),
 //! POSIX character class expansion, and pattern normalization for the Rust regex crate.
 
+use crate::shell::pattern_utils::posix_class_to_regex;
+
 /// Map POSIX character class names to their character ranges.
 fn posix_class(name: &str) -> Option<&'static str> {
-    match name {
-        "alnum" => Some("a-zA-Z0-9"),
-        "alpha" => Some("a-zA-Z"),
-        "ascii" => Some("\\x00-\\x7F"),
-        "blank" => Some(" \\t"),
-        "cntrl" => Some("\\x00-\\x1F\\x7F"),
-        "digit" => Some("0-9"),
-        "graph" => Some("!-~"),
-        "lower" => Some("a-z"),
-        "print" => Some(" -~"),
-        "punct" => Some("!-/:-@\\[-`{-~"),
-        "space" => Some(" \\t\\n\\r\\x0C\\x0B"),
-        "upper" => Some("A-Z"),
-        "word" => Some("a-zA-Z0-9_"),
-        "xdigit" => Some("0-9A-Fa-f"),
-        _ => None,
-    }
+    let result = posix_class_to_regex(name);
+    if result.is_empty() { None } else { Some(result) }
 }
 
 /// Convert Basic Regular Expression (BRE) to Extended Regular Expression (ERE).

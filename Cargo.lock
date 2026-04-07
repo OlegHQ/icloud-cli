@@ -1396,7 +1396,6 @@ dependencies = [
  "htmd",
  "http",
  "jaq-all",
- "lazy_static",
  "libc",
  "md-5",
  "rand 0.8.5",
@@ -1406,6 +1405,7 @@ dependencies = [
  "sha1",
  "sha2",
  "similar",
+ "sprintf",
  "tar",
  "thiserror 1.0.69",
  "tokio",
@@ -2424,6 +2424,15 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "sprintf"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0e59842c3aac5c7901ea11bbb02e60e5d67263b43d4361dec9303cca8e764eb"
+dependencies = [
+ "thiserror 2.0.18",
 ]
 
 [[package]]

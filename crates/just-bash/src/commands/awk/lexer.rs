@@ -3,26 +3,7 @@
 /// Tokenizes AWK source code into a stream of tokens.
 /// Ported from the TypeScript implementation.
 use super::types::{Token, TokenType};
-
-// ─── POSIX Character Class Expansion ─────────────────────────
-
-/// Expand POSIX character classes in regex patterns to their equivalent
-/// character class expressions.
-fn expand_posix_classes(pattern: &str) -> String {
-    pattern
-        .replace("[[:space:]]", r"[ \t\n\r\f\v]")
-        .replace("[[:blank:]]", r"[ \t]")
-        .replace("[[:alpha:]]", "[a-zA-Z]")
-        .replace("[[:digit:]]", "[0-9]")
-        .replace("[[:alnum:]]", "[a-zA-Z0-9]")
-        .replace("[[:upper:]]", "[A-Z]")
-        .replace("[[:lower:]]", "[a-z]")
-        .replace("[[:punct:]]", r##"[!"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~]"##)
-        .replace("[[:xdigit:]]", "[0-9A-Fa-f]")
-        .replace("[[:graph:]]", "[!-~]")
-        .replace("[[:print:]]", "[ -~]")
-        .replace("[[:cntrl:]]", r"[\x00-\x1f\x7f]")
-}
+use crate::shell::pattern_utils::expand_posix_classes_in_pattern as expand_posix_classes;
 
 // ─── Keywords Map ────────────────────────────────────────────
 

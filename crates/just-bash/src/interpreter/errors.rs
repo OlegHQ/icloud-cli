@@ -28,6 +28,33 @@ pub trait ControlFlowError: std::error::Error {
     }
 }
 
+/// Implements Display, Error, ControlFlowError, and From<T> for InterpreterError
+/// for each error type. All error types carry stdout/stderr fields.
+macro_rules! impl_error {
+    ($ty:ty, $variant:ident, $display:expr) => {
+        impl fmt::Display for $ty {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                #[allow(clippy::redundant_closure_call)]
+                write!(f, "{}", ($display)(self))
+            }
+        }
+        impl std::error::Error for $ty {}
+        impl ControlFlowError for $ty {
+            fn stdout(&self) -> &str { &self.stdout }
+            fn stderr(&self) -> &str { &self.stderr }
+            fn stdout_mut(&mut self) -> &mut String { &mut self.stdout }
+            fn stderr_mut(&mut self) -> &mut String { &mut self.stderr }
+        }
+        impl From<$ty> for InterpreterError {
+            fn from(e: $ty) -> Self { InterpreterError::$variant(e) }
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Error structs
+// ---------------------------------------------------------------------------
+
 /// Error thrown when break is called to exit loops.
 #[derive(Debug, Clone)]
 pub struct BreakError {
@@ -38,44 +65,13 @@ pub struct BreakError {
 
 impl BreakError {
     pub fn new(levels: u32, stdout: String, stderr: String) -> Self {
-        Self {
-            levels,
-            stdout,
-            stderr,
-        }
+        Self { levels, stdout, stderr }
     }
 }
 
 impl Default for BreakError {
     fn default() -> Self {
-        Self {
-            levels: 1,
-            stdout: String::new(),
-            stderr: String::new(),
-        }
-    }
-}
-
-impl fmt::Display for BreakError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "break")
-    }
-}
-
-impl std::error::Error for BreakError {}
-
-impl ControlFlowError for BreakError {
-    fn stdout(&self) -> &str {
-        &self.stdout
-    }
-    fn stderr(&self) -> &str {
-        &self.stderr
-    }
-    fn stdout_mut(&mut self) -> &mut String {
-        &mut self.stdout
-    }
-    fn stderr_mut(&mut self) -> &mut String {
-        &mut self.stderr
+        Self { levels: 1, stdout: String::new(), stderr: String::new() }
     }
 }
 
@@ -89,44 +85,13 @@ pub struct ContinueError {
 
 impl ContinueError {
     pub fn new(levels: u32, stdout: String, stderr: String) -> Self {
-        Self {
-            levels,
-            stdout,
-            stderr,
-        }
+        Self { levels, stdout, stderr }
     }
 }
 
 impl Default for ContinueError {
     fn default() -> Self {
-        Self {
-            levels: 1,
-            stdout: String::new(),
-            stderr: String::new(),
-        }
-    }
-}
-
-impl fmt::Display for ContinueError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "continue")
-    }
-}
-
-impl std::error::Error for ContinueError {}
-
-impl ControlFlowError for ContinueError {
-    fn stdout(&self) -> &str {
-        &self.stdout
-    }
-    fn stderr(&self) -> &str {
-        &self.stderr
-    }
-    fn stdout_mut(&mut self) -> &mut String {
-        &mut self.stdout
-    }
-    fn stderr_mut(&mut self) -> &mut String {
-        &mut self.stderr
+        Self { levels: 1, stdout: String::new(), stderr: String::new() }
     }
 }
 
@@ -140,44 +105,13 @@ pub struct ReturnError {
 
 impl ReturnError {
     pub fn new(exit_code: i32, stdout: String, stderr: String) -> Self {
-        Self {
-            exit_code,
-            stdout,
-            stderr,
-        }
+        Self { exit_code, stdout, stderr }
     }
 }
 
 impl Default for ReturnError {
     fn default() -> Self {
-        Self {
-            exit_code: 0,
-            stdout: String::new(),
-            stderr: String::new(),
-        }
-    }
-}
-
-impl fmt::Display for ReturnError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "return")
-    }
-}
-
-impl std::error::Error for ReturnError {}
-
-impl ControlFlowError for ReturnError {
-    fn stdout(&self) -> &str {
-        &self.stdout
-    }
-    fn stderr(&self) -> &str {
-        &self.stderr
-    }
-    fn stdout_mut(&mut self) -> &mut String {
-        &mut self.stdout
-    }
-    fn stderr_mut(&mut self) -> &mut String {
-        &mut self.stderr
+        Self { exit_code: 0, stdout: String::new(), stderr: String::new() }
     }
 }
 
@@ -191,34 +125,7 @@ pub struct ErrexitError {
 
 impl ErrexitError {
     pub fn new(exit_code: i32, stdout: String, stderr: String) -> Self {
-        Self {
-            exit_code,
-            stdout,
-            stderr,
-        }
-    }
-}
-
-impl fmt::Display for ErrexitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "errexit: command exited with status {}", self.exit_code)
-    }
-}
-
-impl std::error::Error for ErrexitError {}
-
-impl ControlFlowError for ErrexitError {
-    fn stdout(&self) -> &str {
-        &self.stdout
-    }
-    fn stderr(&self) -> &str {
-        &self.stderr
-    }
-    fn stdout_mut(&mut self) -> &mut String {
-        &mut self.stdout
-    }
-    fn stderr_mut(&mut self) -> &mut String {
-        &mut self.stderr
+        Self { exit_code, stdout, stderr }
     }
 }
 
@@ -233,34 +140,7 @@ pub struct NounsetError {
 impl NounsetError {
     pub fn new(var_name: String, stdout: String) -> Self {
         let stderr = format!("bash: {}: unbound variable\n", var_name);
-        Self {
-            var_name,
-            stdout,
-            stderr,
-        }
-    }
-}
-
-impl fmt::Display for NounsetError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: unbound variable", self.var_name)
-    }
-}
-
-impl std::error::Error for NounsetError {}
-
-impl ControlFlowError for NounsetError {
-    fn stdout(&self) -> &str {
-        &self.stdout
-    }
-    fn stderr(&self) -> &str {
-        &self.stderr
-    }
-    fn stdout_mut(&mut self) -> &mut String {
-        &mut self.stdout
-    }
-    fn stderr_mut(&mut self) -> &mut String {
-        &mut self.stderr
+        Self { var_name, stdout, stderr }
     }
 }
 
@@ -274,100 +154,37 @@ pub struct ExitError {
 
 impl ExitError {
     pub fn new(exit_code: i32, stdout: String, stderr: String) -> Self {
-        Self {
-            exit_code,
-            stdout,
-            stderr,
-        }
+        Self { exit_code, stdout, stderr }
     }
 }
 
-impl fmt::Display for ExitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "exit")
-    }
+/// Helper: if stderr is empty, generate a default "bash: {msg}\n" message.
+fn default_stderr(stderr: String, msg: &str) -> String {
+    if stderr.is_empty() { format!("bash: {}\n", msg) } else { stderr }
 }
 
-impl std::error::Error for ExitError {}
-
-impl ControlFlowError for ExitError {
-    fn stdout(&self) -> &str {
-        &self.stdout
-    }
-    fn stderr(&self) -> &str {
-        &self.stderr
-    }
-    fn stdout_mut(&mut self) -> &mut String {
-        &mut self.stdout
-    }
-    fn stderr_mut(&mut self) -> &mut String {
-        &mut self.stderr
-    }
-}
-
-/// Error thrown for arithmetic expression errors (e.g., floating point, invalid syntax).
-/// Returns exit code 1 instead of 2 (syntax error).
+/// Error thrown for arithmetic expression errors.
 #[derive(Debug, Clone)]
 pub struct ArithmeticError {
     pub message: String,
     pub stdout: String,
     pub stderr: String,
-    /// If true, this error should abort script execution (like missing operand after binary operator).
-    /// If false, the error is recoverable and execution can continue.
+    /// If true, this error should abort script execution.
     pub fatal: bool,
 }
 
 impl ArithmeticError {
     pub fn new(message: String, stdout: String, stderr: String, fatal: bool) -> Self {
-        let stderr = if stderr.is_empty() {
-            format!("bash: {}\n", message)
-        } else {
-            stderr
-        };
-        Self {
-            message,
-            stdout,
-            stderr,
-            fatal,
-        }
+        Self { message: message.clone(), stdout, stderr: default_stderr(stderr, &message), fatal }
     }
 
     pub fn simple(message: impl Into<String>) -> Self {
         let msg = message.into();
-        Self::new(
-            msg.clone(),
-            String::new(),
-            format!("bash: {}\n", msg),
-            false,
-        )
-    }
-}
-
-impl fmt::Display for ArithmeticError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for ArithmeticError {}
-
-impl ControlFlowError for ArithmeticError {
-    fn stdout(&self) -> &str {
-        &self.stdout
-    }
-    fn stderr(&self) -> &str {
-        &self.stderr
-    }
-    fn stdout_mut(&mut self) -> &mut String {
-        &mut self.stdout
-    }
-    fn stderr_mut(&mut self) -> &mut String {
-        &mut self.stderr
+        Self::new(msg, String::new(), String::new(), false)
     }
 }
 
 /// Error thrown for bad substitution errors (e.g., ${#var:1:3}).
-/// Returns exit code 1.
 #[derive(Debug, Clone)]
 pub struct BadSubstitutionError {
     pub message: String,
@@ -382,48 +199,16 @@ impl BadSubstitutionError {
         } else {
             stderr
         };
-        Self {
-            message,
-            stdout,
-            stderr,
-        }
+        Self { message, stdout, stderr }
     }
 
     pub fn simple(message: impl Into<String>) -> Self {
         let msg = message.into();
-        Self::new(
-            msg.clone(),
-            String::new(),
-            format!("bash: {}: bad substitution\n", msg),
-        )
-    }
-}
-
-impl fmt::Display for BadSubstitutionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for BadSubstitutionError {}
-
-impl ControlFlowError for BadSubstitutionError {
-    fn stdout(&self) -> &str {
-        &self.stdout
-    }
-    fn stderr(&self) -> &str {
-        &self.stderr
-    }
-    fn stdout_mut(&mut self) -> &mut String {
-        &mut self.stdout
-    }
-    fn stderr_mut(&mut self) -> &mut String {
-        &mut self.stderr
+        Self::new(msg, String::new(), String::new())
     }
 }
 
 /// Error thrown when failglob is enabled and a glob pattern has no matches.
-/// Returns exit code 1.
 #[derive(Debug, Clone)]
 pub struct GlobError {
     pub pattern: String,
@@ -438,48 +223,16 @@ impl GlobError {
         } else {
             stderr
         };
-        Self {
-            pattern,
-            stdout,
-            stderr,
-        }
+        Self { pattern, stdout, stderr }
     }
 
     pub fn simple(pattern: impl Into<String>) -> Self {
         let pat = pattern.into();
-        Self::new(
-            pat.clone(),
-            String::new(),
-            format!("bash: no match: {}\n", pat),
-        )
+        Self::new(pat, String::new(), String::new())
     }
 }
 
-impl fmt::Display for GlobError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "no match: {}", self.pattern)
-    }
-}
-
-impl std::error::Error for GlobError {}
-
-impl ControlFlowError for GlobError {
-    fn stdout(&self) -> &str {
-        &self.stdout
-    }
-    fn stderr(&self) -> &str {
-        &self.stderr
-    }
-    fn stdout_mut(&mut self) -> &mut String {
-        &mut self.stdout
-    }
-    fn stderr_mut(&mut self) -> &mut String {
-        &mut self.stderr
-    }
-}
-
-/// Error thrown for invalid brace expansions (e.g., mixed case character ranges like {z..A}).
-/// Returns exit code 1 (matching bash behavior).
+/// Error thrown for invalid brace expansions.
 #[derive(Debug, Clone)]
 pub struct BraceExpansionError {
     pub message: String,
@@ -489,44 +242,12 @@ pub struct BraceExpansionError {
 
 impl BraceExpansionError {
     pub fn new(message: String, stdout: String, stderr: String) -> Self {
-        let stderr = if stderr.is_empty() {
-            format!("bash: {}\n", message)
-        } else {
-            stderr
-        };
-        Self {
-            message,
-            stdout,
-            stderr,
-        }
+        Self { message: message.clone(), stdout, stderr: default_stderr(stderr, &message) }
     }
 
     pub fn simple(message: impl Into<String>) -> Self {
         let msg = message.into();
-        Self::new(msg.clone(), String::new(), format!("bash: {}\n", msg))
-    }
-}
-
-impl fmt::Display for BraceExpansionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for BraceExpansionError {}
-
-impl ControlFlowError for BraceExpansionError {
-    fn stdout(&self) -> &str {
-        &self.stdout
-    }
-    fn stderr(&self) -> &str {
-        &self.stderr
-    }
-    fn stdout_mut(&mut self) -> &mut String {
-        &mut self.stdout
-    }
-    fn stderr_mut(&mut self) -> &mut String {
-        &mut self.stderr
+        Self::new(msg, String::new(), String::new())
     }
 }
 
@@ -548,8 +269,7 @@ impl fmt::Display for LimitType {
     }
 }
 
-/// Error thrown when execution limits are exceeded (recursion depth, command count, loop iterations).
-/// This should ALWAYS be thrown before Rust's native stack overflow kicks in.
+/// Error thrown when execution limits are exceeded.
 /// Exit code 126 indicates a limit was exceeded.
 #[derive(Debug, Clone)]
 pub struct ExecutionLimitError {
@@ -563,55 +283,16 @@ impl ExecutionLimitError {
     pub const EXIT_CODE: i32 = 126;
 
     pub fn new(message: String, limit_type: LimitType, stdout: String, stderr: String) -> Self {
-        let stderr = if stderr.is_empty() {
-            format!("bash: {}\n", message)
-        } else {
-            stderr
-        };
-        Self {
-            message,
-            limit_type,
-            stdout,
-            stderr,
-        }
+        Self { message: message.clone(), limit_type, stdout, stderr: default_stderr(stderr, &message) }
     }
 
     pub fn simple(message: impl Into<String>, limit_type: LimitType) -> Self {
         let msg = message.into();
-        Self::new(
-            msg.clone(),
-            limit_type,
-            String::new(),
-            format!("bash: {}\n", msg),
-        )
+        Self::new(msg, limit_type, String::new(), String::new())
     }
 }
 
-impl fmt::Display for ExecutionLimitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for ExecutionLimitError {}
-
-impl ControlFlowError for ExecutionLimitError {
-    fn stdout(&self) -> &str {
-        &self.stdout
-    }
-    fn stderr(&self) -> &str {
-        &self.stderr
-    }
-    fn stdout_mut(&mut self) -> &mut String {
-        &mut self.stdout
-    }
-    fn stderr_mut(&mut self) -> &mut String {
-        &mut self.stderr
-    }
-}
-
-/// Error thrown when break/continue is called in a subshell that was
-/// spawned from within a loop context. Causes the subshell to exit cleanly.
+/// Error thrown when break/continue is called in a subshell spawned from a loop context.
 #[derive(Debug, Clone)]
 pub struct SubshellExitError {
     pub stdout: String,
@@ -626,43 +307,11 @@ impl SubshellExitError {
 
 impl Default for SubshellExitError {
     fn default() -> Self {
-        Self {
-            stdout: String::new(),
-            stderr: String::new(),
-        }
-    }
-}
-
-impl fmt::Display for SubshellExitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "subshell exit")
-    }
-}
-
-impl std::error::Error for SubshellExitError {}
-
-impl ControlFlowError for SubshellExitError {
-    fn stdout(&self) -> &str {
-        &self.stdout
-    }
-    fn stderr(&self) -> &str {
-        &self.stderr
-    }
-    fn stdout_mut(&mut self) -> &mut String {
-        &mut self.stdout
-    }
-    fn stderr_mut(&mut self) -> &mut String {
-        &mut self.stderr
+        Self { stdout: String::new(), stderr: String::new() }
     }
 }
 
 /// Error thrown when a POSIX special builtin fails in POSIX mode.
-/// In POSIX mode (set -o posix), errors in special builtins like
-/// shift, set, readonly, export, etc. cause the entire script to exit.
-///
-/// Per POSIX 2.8.1 - Consequences of Shell Errors:
-/// "A special built-in utility causes an interactive or non-interactive shell
-/// to exit when an error occurs."
 #[derive(Debug, Clone)]
 pub struct PosixFatalError {
     pub exit_code: i32,
@@ -672,36 +321,31 @@ pub struct PosixFatalError {
 
 impl PosixFatalError {
     pub fn new(exit_code: i32, stdout: String, stderr: String) -> Self {
-        Self {
-            exit_code,
-            stdout,
-            stderr,
-        }
+        Self { exit_code, stdout, stderr }
     }
 }
 
-impl fmt::Display for PosixFatalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "posix fatal error")
-    }
-}
+// ---------------------------------------------------------------------------
+// Trait impls via macro (Display + Error + ControlFlowError + From)
+// ---------------------------------------------------------------------------
 
-impl std::error::Error for PosixFatalError {}
+impl_error!(BreakError,            Break,            |_: &BreakError| "break");
+impl_error!(ContinueError,        Continue,         |_: &ContinueError| "continue");
+impl_error!(ReturnError,          Return,           |_: &ReturnError| "return");
+impl_error!(ErrexitError,         Errexit,          |e: &ErrexitError| format!("errexit: command exited with status {}", e.exit_code));
+impl_error!(NounsetError,         Nounset,          |e: &NounsetError| format!("{}: unbound variable", e.var_name));
+impl_error!(ExitError,            Exit,             |_: &ExitError| "exit");
+impl_error!(ArithmeticError,      Arithmetic,       |e: &ArithmeticError| e.message.clone());
+impl_error!(BadSubstitutionError, BadSubstitution,  |e: &BadSubstitutionError| e.message.clone());
+impl_error!(GlobError,            Glob,             |e: &GlobError| format!("no match: {}", e.pattern));
+impl_error!(BraceExpansionError,  BraceExpansion,   |e: &BraceExpansionError| e.message.clone());
+impl_error!(ExecutionLimitError,  ExecutionLimit,    |e: &ExecutionLimitError| e.message.clone());
+impl_error!(SubshellExitError,    SubshellExit,     |_: &SubshellExitError| "subshell exit");
+impl_error!(PosixFatalError,      PosixFatal,       |_: &PosixFatalError| "posix fatal error");
 
-impl ControlFlowError for PosixFatalError {
-    fn stdout(&self) -> &str {
-        &self.stdout
-    }
-    fn stderr(&self) -> &str {
-        &self.stderr
-    }
-    fn stdout_mut(&mut self) -> &mut String {
-        &mut self.stdout
-    }
-    fn stderr_mut(&mut self) -> &mut String {
-        &mut self.stderr
-    }
-}
+// ---------------------------------------------------------------------------
+// Unified error enum
+// ---------------------------------------------------------------------------
 
 /// Unified error enum for all interpreter errors.
 #[derive(Debug, Clone)]
@@ -724,19 +368,19 @@ pub enum InterpreterError {
 impl fmt::Display for InterpreterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            InterpreterError::Break(e) => write!(f, "{}", e),
-            InterpreterError::Continue(e) => write!(f, "{}", e),
-            InterpreterError::Return(e) => write!(f, "{}", e),
-            InterpreterError::Errexit(e) => write!(f, "{}", e),
-            InterpreterError::Nounset(e) => write!(f, "{}", e),
-            InterpreterError::Exit(e) => write!(f, "{}", e),
-            InterpreterError::Arithmetic(e) => write!(f, "{}", e),
-            InterpreterError::BadSubstitution(e) => write!(f, "{}", e),
-            InterpreterError::Glob(e) => write!(f, "{}", e),
-            InterpreterError::BraceExpansion(e) => write!(f, "{}", e),
-            InterpreterError::ExecutionLimit(e) => write!(f, "{}", e),
-            InterpreterError::SubshellExit(e) => write!(f, "{}", e),
-            InterpreterError::PosixFatal(e) => write!(f, "{}", e),
+            Self::Break(e) => write!(f, "{}", e),
+            Self::Continue(e) => write!(f, "{}", e),
+            Self::Return(e) => write!(f, "{}", e),
+            Self::Errexit(e) => write!(f, "{}", e),
+            Self::Nounset(e) => write!(f, "{}", e),
+            Self::Exit(e) => write!(f, "{}", e),
+            Self::Arithmetic(e) => write!(f, "{}", e),
+            Self::BadSubstitution(e) => write!(f, "{}", e),
+            Self::Glob(e) => write!(f, "{}", e),
+            Self::BraceExpansion(e) => write!(f, "{}", e),
+            Self::ExecutionLimit(e) => write!(f, "{}", e),
+            Self::SubshellExit(e) => write!(f, "{}", e),
+            Self::PosixFatal(e) => write!(f, "{}", e),
         }
     }
 }
@@ -750,83 +394,4 @@ pub fn is_scope_exit_error(error: &InterpreterError) -> bool {
         error,
         InterpreterError::Break(_) | InterpreterError::Continue(_) | InterpreterError::Return(_)
     )
-}
-
-// Implement From for each error type
-impl From<BreakError> for InterpreterError {
-    fn from(e: BreakError) -> Self {
-        InterpreterError::Break(e)
-    }
-}
-
-impl From<ContinueError> for InterpreterError {
-    fn from(e: ContinueError) -> Self {
-        InterpreterError::Continue(e)
-    }
-}
-
-impl From<ReturnError> for InterpreterError {
-    fn from(e: ReturnError) -> Self {
-        InterpreterError::Return(e)
-    }
-}
-
-impl From<ErrexitError> for InterpreterError {
-    fn from(e: ErrexitError) -> Self {
-        InterpreterError::Errexit(e)
-    }
-}
-
-impl From<NounsetError> for InterpreterError {
-    fn from(e: NounsetError) -> Self {
-        InterpreterError::Nounset(e)
-    }
-}
-
-impl From<ExitError> for InterpreterError {
-    fn from(e: ExitError) -> Self {
-        InterpreterError::Exit(e)
-    }
-}
-
-impl From<ArithmeticError> for InterpreterError {
-    fn from(e: ArithmeticError) -> Self {
-        InterpreterError::Arithmetic(e)
-    }
-}
-
-impl From<BadSubstitutionError> for InterpreterError {
-    fn from(e: BadSubstitutionError) -> Self {
-        InterpreterError::BadSubstitution(e)
-    }
-}
-
-impl From<GlobError> for InterpreterError {
-    fn from(e: GlobError) -> Self {
-        InterpreterError::Glob(e)
-    }
-}
-
-impl From<BraceExpansionError> for InterpreterError {
-    fn from(e: BraceExpansionError) -> Self {
-        InterpreterError::BraceExpansion(e)
-    }
-}
-
-impl From<ExecutionLimitError> for InterpreterError {
-    fn from(e: ExecutionLimitError) -> Self {
-        InterpreterError::ExecutionLimit(e)
-    }
-}
-
-impl From<SubshellExitError> for InterpreterError {
-    fn from(e: SubshellExitError) -> Self {
-        InterpreterError::SubshellExit(e)
-    }
-}
-
-impl From<PosixFatalError> for InterpreterError {
-    fn from(e: PosixFatalError) -> Self {
-        InterpreterError::PosixFatal(e)
-    }
 }
