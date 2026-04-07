@@ -49,6 +49,7 @@ brush-parser = "0.3"
 sprintf = "0.4"
 awk-rs = "0.1"
 sed-rs = "1.0.0"
+ureq = "2.9"
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["rt-multi-thread", "macros"] }

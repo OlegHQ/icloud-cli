@@ -7,52 +7,12 @@ use std::sync::Arc;
 
 use crate::commands::{Command, CommandContext, CommandResult};
 use crate::fs::types::{FileSystem, MkdirOptions};
+use crate::shell::pattern_utils;
 
 use archive::{compress_gzip, create_archive, decompress_gzip, is_gzip, parse_archive, TarEntry};
 use options::{parse_options, TarOperation};
 
 pub struct TarCommand;
-
-/// Simple glob matching: `*` matches any chars except `/`, `?` matches single char.
-fn glob_match(pattern: &str, text: &str) -> bool {
-    let pat: Vec<char> = pattern.chars().collect();
-    let txt: Vec<char> = text.chars().collect();
-    glob_match_inner(&pat, &txt)
-}
-
-fn glob_match_inner(pat: &[char], txt: &[char]) -> bool {
-    let mut pi = 0;
-    let mut ti = 0;
-    let mut star_pi = None;
-    let mut star_ti = None;
-
-    while ti < txt.len() {
-        if pi < pat.len() && pat[pi] == '?' {
-            pi += 1;
-            ti += 1;
-        } else if pi < pat.len() && pat[pi] == '*' {
-            star_pi = Some(pi);
-            star_ti = Some(ti);
-            pi += 1;
-        } else if pi < pat.len() && pat[pi] == txt[ti] {
-            pi += 1;
-            ti += 1;
-        } else if let (Some(sp), Some(st)) = (star_pi, star_ti) {
-            pi = sp + 1;
-            let new_st = st + 1;
-            star_ti = Some(new_st);
-            ti = new_st;
-        } else {
-            return false;
-        }
-    }
-
-    while pi < pat.len() && pat[pi] == '*' {
-        pi += 1;
-    }
-
-    pi == pat.len()
-}
 
 /// Check if a path matches any exclude pattern.
 fn matches_exclude(path: &str, patterns: &[String]) -> bool {
@@ -64,16 +24,16 @@ fn matches_exclude(path: &str, patterns: &[String]) -> bool {
 
     for pattern in patterns {
         // Check full path match
-        if glob_match(pattern, path) {
+        if pattern_utils::matches_shell_glob(pattern, path) {
             return true;
         }
         // Check if path starts with pattern/
         let with_slash = format!("{}/", pattern);
-        if glob_match(&with_slash, path) || path.starts_with(&with_slash) {
+        if pattern_utils::matches_shell_glob(&with_slash, path) || path.starts_with(&with_slash) {
             return true;
         }
         // Check basename match (for patterns like *.log)
-        if !pattern.contains('/') && glob_match(pattern, basename) {
+        if !pattern.contains('/') && pattern_utils::matches_shell_glob(pattern, basename) {
             return true;
         }
     }
@@ -881,6 +841,7 @@ impl TarCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::find::matcher::glob_match;
     use crate::fs::InMemoryFs;
     use std::collections::HashMap;
 

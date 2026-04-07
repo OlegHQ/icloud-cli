@@ -7,6 +7,7 @@
 //! for each builtin command matching PATTERN to a short usage synopsis.
 
 use super::break_cmd::BuiltinResult;
+use crate::shell::pattern_utils;
 
 /// Builtin help information: (synopsis, description)
 struct BuiltinHelp {
@@ -402,20 +403,8 @@ pub fn handle_help(args: &[String]) -> BuiltinResult {
 fn find_matching_builtins(pattern: &str) -> Vec<&'static BuiltinHelp> {
     BUILTIN_HELP
         .iter()
-        .filter(|h| glob_match(pattern, h.name))
+        .filter(|h| pattern_utils::matches_shell_glob(pattern, h.name))
         .collect()
-}
-
-/// Glob matching using the `glob` crate (supports *, ?, [...], [!...]).
-fn glob_match(pattern: &str, text: &str) -> bool {
-    let opts = glob::MatchOptions {
-        case_sensitive: true,
-        require_literal_separator: false,
-        require_literal_leading_dot: false,
-    };
-    glob::Pattern::new(pattern)
-        .map(|p| p.matches_with(text, opts))
-        .unwrap_or(false)
 }
 
 /// List all builtins in a formatted table
@@ -455,6 +444,7 @@ fn list_all_builtins() -> BuiltinResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::find::matcher::glob_match;
 
     #[test]
     fn test_help_no_args() {

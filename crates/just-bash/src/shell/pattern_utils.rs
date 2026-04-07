@@ -252,3 +252,18 @@ pub fn expand_posix_classes_in_regex(regex: &str) -> String {
     }
     result
 }
+
+/// Path/name glob using the `glob` crate (`*`, `?`, character classes).
+///
+/// Used by `find`, `tar` exclude patterns, `help` builtin name matching, `rg -g`, etc.
+#[inline]
+pub fn matches_shell_glob(pattern: &str, text: &str) -> bool {
+    let opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: false,
+        require_literal_leading_dot: false,
+    };
+    glob::Pattern::new(pattern)
+        .map(|p| p.matches_with(text, opts))
+        .unwrap_or(false)
+}

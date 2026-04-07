@@ -1,5 +1,6 @@
 use crate::commands::{Command, CommandContext, CommandResult};
 use crate::fs::FileSystem;
+use crate::shell::pattern_utils;
 use async_trait::async_trait;
 use regex_lite::Regex;
 use std::collections::HashSet;
@@ -116,15 +117,9 @@ fn matches_glob(path: &str, globs: &[String]) -> bool {
         return true;
     }
     let filename = path.rsplit('/').next().unwrap_or(path);
-    for glob in globs {
-        let pattern = glob.replace("*", ".*").replace("?", ".");
-        if let Ok(re) = Regex::new(&format!("^{}$", pattern)) {
-            if re.is_match(filename) {
-                return true;
-            }
-        }
-    }
-    false
+    globs
+        .iter()
+        .any(|g| pattern_utils::matches_shell_glob(g, filename))
 }
 
 #[async_trait]

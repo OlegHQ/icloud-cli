@@ -12,6 +12,10 @@ Future sessions should read this first before rescanning the repo.
 
 ## Completed In This Session
 
+- Split large `#[cfg(test)]` modules for `awk`, `sed`, `grep`, and `curl` into sibling `tests.rs` files so each command’s `mod.rs` stays implementation-focused (no change in total test coverage).
+- Added `ureq` and `just_bash::network::ureq_fetch_fn()` as a reusable native HTTP [`FetchFn`]; embedders should still wrap it with `create_secure_fetch_fn` when enforcing an allow-list.
+- Centralized shell-style path globs in `shell::pattern_utils::matches_shell_glob` (~50 lines removed): `tar` exclude logic, `find` matcher, `help` builtin filtering, and `rg -g` now share one `glob::Pattern` implementation instead of parallel matchers.
+
 ### Boundary / policy
 
 - Added an explicit module-boundary rule to `AGENTS.md`:

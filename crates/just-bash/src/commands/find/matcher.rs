@@ -1,6 +1,7 @@
 use std::time::SystemTime;
 
 use super::types::*;
+use crate::shell::pattern_utils;
 
 /// Evaluate a find expression against an EvalContext, returning an EvalResult.
 pub fn evaluate(expr: &Expression, ctx: &EvalContext) -> EvalResult {
@@ -240,19 +241,10 @@ pub fn evaluate(expr: &Expression, ctx: &EvalContext) -> EvalResult {
         }
     }
 }
-/// Glob-style pattern matching supporting *, ?, [...], [!...].
-/// Uses the `glob` crate's `Pattern` for matching. The `*` wildcard matches
-/// any character including `/`, consistent with `find -name` (which operates
-/// on basenames without slashes) and `find -path` (which should match `/`).
+/// Glob-style pattern matching supporting *, ?, `[…]`.
+/// See [`pattern_utils::matches_shell_glob`].
 pub fn glob_match(pattern: &str, text: &str) -> bool {
-    let opts = glob::MatchOptions {
-        case_sensitive: true,
-        require_literal_separator: false,
-        require_literal_leading_dot: false,
-    };
-    glob::Pattern::new(pattern)
-        .map(|p| p.matches_with(text, opts))
-        .unwrap_or(false)
+    pattern_utils::matches_shell_glob(pattern, text)
 }
 /// Format a printf-style format string using find context.
 fn format_printf(format: &str, ctx: &EvalContext) -> String {
