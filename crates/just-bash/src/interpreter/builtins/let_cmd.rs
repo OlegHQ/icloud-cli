@@ -14,7 +14,6 @@
 
 use crate::interpreter::arithmetic::evaluate_arithmetic;
 use crate::interpreter::types::InterpreterState;
-use crate::parser::parse_arith_expr;
 
 /// Result type for builtin commands
 pub type BuiltinResult = (String, String, i32);
@@ -81,25 +80,9 @@ pub fn handle_let(state: &mut InterpreterState, args: &[String]) -> BuiltinResul
     let mut ctx = InterpreterContext::new(state, &limits);
 
     for expr in &expressions {
-        // Parse the expression using the arithmetic parser
-        let (arith_expr, pos) = parse_arith_expr(expr, 0);
-
-        // Check for unparsed content (syntax error)
-        if pos < expr.len() {
-            let unparsed = &expr[pos..];
-            let error_token = unparsed.split_whitespace().next().unwrap_or(unparsed);
-            return (
-                String::new(),
-                format!(
-                    "bash: let: {}: syntax error in expression (error token is \"{}\")\n",
-                    expr, error_token
-                ),
-                1,
-            );
-        }
-
-        // Evaluate the expression
-        match evaluate_arithmetic(&mut ctx, &arith_expr, false, None) {
+        // Parse the expression using the brush-parser arithmetic parser
+        // Evaluate the expression directly from string
+        match evaluate_arithmetic(&mut ctx, expr, false, None) {
             Ok(result) => {
                 last_result = result;
             }

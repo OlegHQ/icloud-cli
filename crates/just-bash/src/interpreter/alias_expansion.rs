@@ -1,6 +1,6 @@
 //! Alias Expansion
 //!
-//! Handles bash alias expansion for SimpleCommandNodes.
+//! Handles bash alias expansion for SimpleCommands (brush_parser::ast types).
 //!
 //! Alias expansion rules:
 //! 1. Only expands if command name is a literal unquoted word
@@ -8,9 +8,7 @@
 //! 3. If alias value ends with a space, the next word is also checked for alias expansion
 //! 4. Recursive expansion is allowed but limited to prevent infinite loops
 
-use crate::{
-    AssignmentNode, LiteralPart, RedirectionNode, ScriptNode, SimpleCommandNode, WordNode, WordPart,
-};
+use brush_parser::ast as bast;
 use std::collections::{HashMap, HashSet};
 
 /// Alias prefix used in environment variables
@@ -22,23 +20,24 @@ pub struct AliasExpansionContext<'a> {
 }
 
 /// Check if a word is a literal unquoted word (eligible for alias expansion).
-/// Aliases only expand for literal words, not for quoted strings or expansions.
-pub fn is_literal_unquoted_word(word: &WordNode) -> bool {
-    // Must have exactly one part that is a literal
-    if word.parts.len() != 1 {
-        return false;
-    }
-    matches!(&word.parts[0], WordPart::Literal(_))
+/// In brush_parser, a Word's `value` is the raw source text. A literal unquoted
+/// word contains no quoting or expansion characters.
+pub fn is_literal_unquoted_word(word: &bast::Word) -> bool {
+    let v = &word.value;
+    !v.is_empty()
+        && !v.contains(|c: char| matches!(c,
+            '"' | '\'' | '$' | '`' | '\\' | '*' | '?' | '[' | ']'
+            | '{' | '}' | '(' | ')' | '<' | '>' | '|' | '&' | ';'
+            | '#' | '!' | '~'
+        ))
 }
 
-/// Get the literal value of a word if it's a simple literal
-pub fn get_literal_value(word: &WordNode) -> Option<&str> {
-    if word.parts.len() != 1 {
-        return None;
-    }
-    match &word.parts[0] {
-        WordPart::Literal(LiteralPart { value }) => Some(value),
-        _ => None,
+/// Get the literal value of a word if it's a simple literal (no quoting/expansion).
+pub fn get_literal_value(word: &bast::Word) -> Option<&str> {
+    if is_literal_unquoted_word(word) {
+        Some(&word.value)
+    } else {
+        None
     }
 }
 
@@ -76,79 +75,100 @@ pub fn get_all_aliases(env: &HashMap<String, String>) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Convert a WordNode back to a string representation for re-parsing.
-/// This is a simplified conversion that handles common cases.
-pub fn word_node_to_string(word: &WordNode) -> String {
-    let mut result = String::new();
-    for part in &word.parts {
-        match part {
-            WordPart::Literal(LiteralPart { value }) => {
-                // Escape special characters
-                for c in value.chars() {
-                    if matches!(
-                        c,
-                        ' ' | '\t'
-                            | '"'
-                            | '\''
-                            | '$'
-                            | '`'
-                            | '\\'
-                            | '*'
-                            | '?'
-                            | '['
-                            | ']'
-                            | '{'
-                            | '}'
-                            | '('
-                            | ')'
-                            | '<'
-                            | '>'
-                            | '|'
-                            | '&'
-                            | ';'
-                            | '#'
-                            | '!'
-                            | '\n'
-                    ) {
-                        result.push('\\');
-                    }
-                    result.push(c);
-                }
+/// Helper: parse a command string into a brush_parser Program AST.
+fn parse_command(input: &str) -> Result<bast::Program, String> {
+    let tokens = brush_parser::tokenize_str(input).map_err(|e| e.to_string())?;
+    brush_parser::parse_tokens(
+        &tokens,
+        &brush_parser::ParserOptions::default(),
+        &brush_parser::SourceInfo::default(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Helper: extract command name word from a SimpleCommand.
+fn get_cmd_name(cmd: &bast::SimpleCommand) -> Option<&bast::Word> {
+    cmd.word_or_name.as_ref()
+}
+
+/// Helper: extract argument words from a SimpleCommand suffix.
+fn get_arg_words(cmd: &bast::SimpleCommand) -> Vec<bast::Word> {
+    let mut args = Vec::new();
+    if let Some(ref suffix) = cmd.suffix {
+        for item in &suffix.0 {
+            if let bast::CommandPrefixOrSuffixItem::Word(w) = item {
+                args.push(w.clone());
             }
-            WordPart::SingleQuoted(sq) => {
-                result.push('\'');
-                result.push_str(&sq.value);
-                result.push('\'');
-            }
-            WordPart::DoubleQuoted(dq) => {
-                result.push('"');
-                for inner in &dq.parts {
-                    if let WordPart::Literal(LiteralPart { value }) = inner {
-                        result.push_str(value);
-                    }
-                }
-                result.push('"');
-            }
-            WordPart::ParameterExpansion(pe) => {
-                result.push_str("${");
-                result.push_str(&pe.parameter);
-                result.push('}');
-            }
-            WordPart::CommandSubstitution(_) => {
-                result.push_str("$(...)");
-            }
-            WordPart::ArithmeticExpansion(_) => {
-                // ArithmeticExpansion contains an AST node, not a string
-                // For alias expansion purposes, we use a placeholder
-                result.push_str("$((...))");
-            }
-            WordPart::Glob(g) => {
-                result.push_str(&g.pattern);
-            }
-            _ => {}
         }
     }
-    result
+    args
+}
+
+/// Helper: extract prefix assignment items from a SimpleCommand.
+fn get_prefix_assignments(cmd: &bast::SimpleCommand) -> Vec<bast::CommandPrefixOrSuffixItem> {
+    let mut items = Vec::new();
+    if let Some(ref prefix) = cmd.prefix {
+        for item in &prefix.0 {
+            if matches!(item, bast::CommandPrefixOrSuffixItem::AssignmentWord(..)) {
+                items.push(item.clone());
+            }
+        }
+    }
+    items
+}
+
+/// Helper: extract redirect items from a SimpleCommand (both prefix and suffix).
+fn get_redirect_items(cmd: &bast::SimpleCommand) -> Vec<bast::CommandPrefixOrSuffixItem> {
+    let mut items = Vec::new();
+    if let Some(ref prefix) = cmd.prefix {
+        for item in &prefix.0 {
+            if matches!(item, bast::CommandPrefixOrSuffixItem::IoRedirect(_)) {
+                items.push(item.clone());
+            }
+        }
+    }
+    if let Some(ref suffix) = cmd.suffix {
+        for item in &suffix.0 {
+            if matches!(item, bast::CommandPrefixOrSuffixItem::IoRedirect(_)) {
+                items.push(item.clone());
+            }
+        }
+    }
+    items
+}
+
+/// Helper: build a SimpleCommand from parts.
+fn build_simple_command(
+    name: Option<bast::Word>,
+    args: Vec<bast::Word>,
+    assignments: Vec<bast::CommandPrefixOrSuffixItem>,
+    redirects: Vec<bast::CommandPrefixOrSuffixItem>,
+) -> bast::SimpleCommand {
+    // Build prefix from assignments + prefix redirects
+    let prefix = if assignments.is_empty() {
+        None
+    } else {
+        Some(bast::CommandPrefix(assignments))
+    };
+
+    // Build suffix from args + suffix redirects
+    let mut suffix_items: Vec<bast::CommandPrefixOrSuffixItem> = args
+        .into_iter()
+        .map(bast::CommandPrefixOrSuffixItem::Word)
+        .collect();
+    suffix_items.extend(redirects);
+
+    let suffix = if suffix_items.is_empty() {
+        None
+    } else {
+        Some(bast::CommandSuffix(suffix_items))
+    };
+
+    bast::SimpleCommand {
+        prefix,
+        word_or_name: name,
+        suffix,
+    }
 }
 
 /// Result of alias expansion
@@ -157,7 +177,7 @@ pub enum AliasExpansionResult {
     /// No expansion occurred, return original node
     NoExpansion,
     /// Expansion succeeded, return new node
-    Expanded(SimpleCommandNode),
+    Expanded(bast::SimpleCommand),
     /// Expansion resulted in a complex command (multiple statements/pipelines)
     /// that needs to be executed as a script
     ComplexAlias(String),
@@ -165,25 +185,25 @@ pub enum AliasExpansionResult {
     ParseError(String),
 }
 
-/// Expand alias in a SimpleCommandNode if applicable.
+/// Expand alias in a SimpleCommand if applicable.
 /// Returns the expansion result.
 pub fn expand_alias(
     ctx: &AliasExpansionContext,
-    node: &SimpleCommandNode,
+    node: &bast::SimpleCommand,
     alias_expansion_stack: &mut HashSet<String>,
 ) -> AliasExpansionResult {
     // Need a command name to expand
-    let name = match &node.name {
+    let name_word = match get_cmd_name(node) {
         Some(n) => n,
         None => return AliasExpansionResult::NoExpansion,
     };
 
     // Check if the command name is a literal unquoted word
-    if !is_literal_unquoted_word(name) {
+    if !is_literal_unquoted_word(name_word) {
         return AliasExpansionResult::NoExpansion;
     }
 
-    let cmd_name = match get_literal_value(name) {
+    let cmd_name = match get_literal_value(name_word) {
         Some(n) => n,
         None => return AliasExpansionResult::NoExpansion,
     };
@@ -209,82 +229,92 @@ pub fn expand_alias(
 
     // If not expanding next, append args directly
     if !expand_next {
-        for arg in &node.args {
-            let arg_literal = word_node_to_string(arg);
+        let orig_args = get_arg_words(node);
+        for arg in &orig_args {
             full_command.push(' ');
-            full_command.push_str(&arg_literal);
+            full_command.push_str(&arg.value);
         }
     }
 
-    // Parse the expanded command
-    let mut parser = crate::parser::Parser::new();
-    let expanded_ast = match parser.parse(&full_command) {
+    // Parse the expanded command using brush_parser
+    let expanded_ast = match parse_command(&full_command) {
         Ok(ast) => ast,
         Err(e) => {
             alias_expansion_stack.remove(cmd_name);
-            return AliasExpansionResult::ParseError(e.to_string());
+            return AliasExpansionResult::ParseError(e);
         }
     };
 
-    // Check if we got a simple command
-    if expanded_ast.statements.len() != 1
-        || expanded_ast.statements[0].pipelines.len() != 1
-        || expanded_ast.statements[0].pipelines[0].commands.len() != 1
-    {
-        // Complex alias - multiple commands, pipelines, etc.
+    // Check if we got a single simple command
+    // Program -> complete_commands (Vec<CompoundList>)
+    // CompoundList -> Vec<CompoundListItem>
+    // CompoundListItem -> (AndOrList, SeparatorOperator)
+    // AndOrList -> first: Pipeline, additional: Vec<AndOr>
+    // Pipeline -> seq: Vec<Command>
+    if expanded_ast.complete_commands.len() != 1 {
         alias_expansion_stack.remove(cmd_name);
         return AliasExpansionResult::ComplexAlias(full_command);
     }
 
-    let expanded_cmd = &expanded_ast.statements[0].pipelines[0].commands[0];
+    let compound_list = &expanded_ast.complete_commands[0];
+    if compound_list.0.len() != 1 {
+        alias_expansion_stack.remove(cmd_name);
+        return AliasExpansionResult::ComplexAlias(full_command);
+    }
+
+    let and_or_list = &compound_list.0[0].0;
+    if !and_or_list.additional.is_empty() || and_or_list.first.seq.len() != 1 {
+        alias_expansion_stack.remove(cmd_name);
+        return AliasExpansionResult::ComplexAlias(full_command);
+    }
+
+    let expanded_cmd = &and_or_list.first.seq[0];
     match expanded_cmd {
-        crate::CommandNode::Simple(simple_cmd) => {
+        bast::Command::Simple(simple_cmd) => {
             // Merge the expanded command with original node's context
-            let mut new_node = SimpleCommandNode {
-                name: simple_cmd.name.clone(),
-                args: simple_cmd.args.clone(),
-                // Preserve original assignments (prefix assignments like FOO=bar alias_cmd)
-                assignments: {
-                    let mut assignments = node.assignments.clone();
-                    assignments.extend(simple_cmd.assignments.clone());
-                    assignments
-                },
-                // Preserve original redirections
-                redirections: {
-                    let mut redirections = simple_cmd.redirections.clone();
-                    redirections.extend(node.redirections.clone());
-                    redirections
-                },
-                // Preserve line number
-                line: node.line,
-            };
+            let expanded_name = simple_cmd.word_or_name.clone();
+            let mut expanded_args = get_arg_words(simple_cmd);
+
+            // Merge assignments: original prefix assignments + expanded prefix assignments
+            let mut merged_assignments = get_prefix_assignments(node);
+            merged_assignments.extend(get_prefix_assignments(simple_cmd));
+
+            // Merge redirections: expanded redirections + original redirections
+            let mut merged_redirects = get_redirect_items(simple_cmd);
+            merged_redirects.extend(get_redirect_items(node));
 
             // If alias ends with space, expand next word too (recursive alias on first arg)
-            if expand_next && !node.args.is_empty() {
-                // Add the original args to the expanded command's args
-                new_node.args.extend(node.args.clone());
+            if expand_next {
+                let orig_args = get_arg_words(node);
+                if !orig_args.is_empty() {
+                    // Add the original args to the expanded command's args
+                    expanded_args.extend(orig_args);
 
-                // Now recursively expand the first arg if it's an alias
-                if !new_node.args.is_empty() {
-                    let first_arg = &new_node.args[0];
+                    // Now recursively expand the first arg if it's an alias
+                    let first_arg = &expanded_args[0];
                     if is_literal_unquoted_word(first_arg) {
                         if let Some(first_arg_name) = get_literal_value(first_arg) {
                             if has_alias(ctx, first_arg_name) {
                                 // Create a temporary node with the first arg as command
-                                let temp_node = SimpleCommandNode {
-                                    name: Some(new_node.args[0].clone()),
-                                    args: new_node.args[1..].to_vec(),
-                                    assignments: vec![],
-                                    redirections: vec![],
-                                    line: None,
-                                };
+                                let temp_args: Vec<bast::Word> = expanded_args[1..].to_vec();
+                                let temp_node = build_simple_command(
+                                    Some(expanded_args[0].clone()),
+                                    temp_args,
+                                    vec![],
+                                    vec![],
+                                );
                                 let expanded_first =
                                     expand_alias(ctx, &temp_node, alias_expansion_stack);
                                 match expanded_first {
-                                    AliasExpansionResult::Expanded(expanded) => {
-                                        // Merge back
-                                        new_node.name = expanded.name;
-                                        new_node.args = expanded.args;
+                                    AliasExpansionResult::Expanded(exp) => {
+                                        let exp_args = get_arg_words(&exp);
+                                        let new_node = build_simple_command(
+                                            exp.word_or_name,
+                                            exp_args,
+                                            merged_assignments,
+                                            merged_redirects,
+                                        );
+                                        return AliasExpansionResult::Expanded(new_node);
                                     }
                                     _ => {
                                         // Keep the original if expansion failed or was complex
@@ -296,6 +326,12 @@ pub fn expand_alias(
                 }
             }
 
+            let new_node = build_simple_command(
+                expanded_name,
+                expanded_args,
+                merged_assignments,
+                merged_redirects,
+            );
             AliasExpansionResult::Expanded(new_node)
         }
         _ => {
@@ -314,39 +350,41 @@ mod tests {
         HashMap::new()
     }
 
-    fn make_literal_word(value: &str) -> WordNode {
-        WordNode {
-            parts: vec![WordPart::Literal(LiteralPart {
-                value: value.to_string(),
-            })],
+    fn make_word(value: &str) -> bast::Word {
+        bast::Word {
+            value: value.to_string(),
+            loc: None,
         }
+    }
+
+    fn make_simple_cmd(name: &str, args: &[&str]) -> bast::SimpleCommand {
+        let arg_words: Vec<bast::Word> = args.iter().map(|a| make_word(a)).collect();
+        build_simple_command(Some(make_word(name)), arg_words, vec![], vec![])
     }
 
     #[test]
     fn test_is_literal_unquoted_word() {
-        let word = make_literal_word("echo");
+        let word = make_word("echo");
         assert!(is_literal_unquoted_word(&word));
 
-        // Multiple parts - not literal
-        let word = WordNode {
-            parts: vec![
-                WordPart::Literal(LiteralPart {
-                    value: "a".to_string(),
-                }),
-                WordPart::Literal(LiteralPart {
-                    value: "b".to_string(),
-                }),
-            ],
-        };
+        // Word with quotes - not literal
+        let word = make_word("\"echo\"");
+        assert!(!is_literal_unquoted_word(&word));
+
+        // Word with expansion
+        let word = make_word("$var");
         assert!(!is_literal_unquoted_word(&word));
     }
 
     #[test]
     fn test_get_literal_value() {
-        let word = make_literal_word("hello");
+        let word = make_word("hello");
         assert_eq!(get_literal_value(&word), Some("hello"));
 
-        let word = WordNode { parts: vec![] };
+        let word = make_word("\"hello\"");
+        assert_eq!(get_literal_value(&word), None);
+
+        let word = make_word("");
         assert_eq!(get_literal_value(&word), None);
     }
 
@@ -383,29 +421,11 @@ mod tests {
     }
 
     #[test]
-    fn test_word_node_to_string_literal() {
-        let word = make_literal_word("hello");
-        assert_eq!(word_node_to_string(&word), "hello");
-    }
-
-    #[test]
-    fn test_word_node_to_string_with_spaces() {
-        let word = make_literal_word("hello world");
-        assert_eq!(word_node_to_string(&word), "hello\\ world");
-    }
-
-    #[test]
     fn test_expand_alias_no_alias() {
         let env = make_env();
         let ctx = AliasExpansionContext { env: &env };
 
-        let node = SimpleCommandNode {
-            name: Some(make_literal_word("echo")),
-            args: vec![make_literal_word("hello")],
-            assignments: vec![],
-            redirections: vec![],
-            line: None,
-        };
+        let node = make_simple_cmd("echo", &["hello"]);
 
         let mut stack = HashSet::new();
         let result = expand_alias(&ctx, &node, &mut stack);
@@ -418,20 +438,14 @@ mod tests {
         set_alias(&mut env, "ll", "ls -la");
         let ctx = AliasExpansionContext { env: &env };
 
-        let node = SimpleCommandNode {
-            name: Some(make_literal_word("ll")),
-            args: vec![],
-            assignments: vec![],
-            redirections: vec![],
-            line: None,
-        };
+        let node = make_simple_cmd("ll", &[]);
 
         let mut stack = HashSet::new();
         let result = expand_alias(&ctx, &node, &mut stack);
 
         match result {
             AliasExpansionResult::Expanded(expanded) => {
-                let cmd_name = expanded.name.as_ref().and_then(|w| get_literal_value(w));
+                let cmd_name = expanded.word_or_name.as_ref().and_then(|w| get_literal_value(w));
                 assert_eq!(cmd_name, Some("ls"));
             }
             _ => panic!("Expected Expanded result"),
@@ -445,13 +459,7 @@ mod tests {
         set_alias(&mut env, "foo", "foo bar");
         let ctx = AliasExpansionContext { env: &env };
 
-        let node = SimpleCommandNode {
-            name: Some(make_literal_word("foo")),
-            args: vec![],
-            assignments: vec![],
-            redirections: vec![],
-            line: None,
-        };
+        let node = make_simple_cmd("foo", &[]);
 
         let mut stack = HashSet::new();
         stack.insert("foo".to_string()); // Simulate already expanding foo

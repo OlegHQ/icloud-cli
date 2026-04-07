@@ -8,7 +8,9 @@
 //! - "${arr[@]#pattern}" - pattern removal
 //! - "${arr[@]@op}" - transform operations
 
-use crate::ast::types::{DoubleQuotedPart, LiteralPart, ParameterExpansionPart, WordPart};
+use brush_parser::word::{
+    Parameter, ParameterExpr, WordPiece, WordPieceWithSource,
+};
 use crate::interpreter::expansion::get_array_elements;
 use crate::interpreter::helpers::{get_nameref_target, is_nameref};
 use crate::interpreter::InterpreterState;
@@ -22,39 +24,42 @@ pub struct ArrayExpansionResult {
     pub quoted: bool,
 }
 
-/// Handle simple "${arr[@]}" expansion without operations.
+/// Handle simple "${arr[@]}" expansion without operations (brush-parser types).
 /// Returns each array element as a separate word.
-pub fn handle_simple_array_expansion(
+pub fn handle_simple_array_expansion_bp(
     state: &InterpreterState,
-    word_parts: &[WordPart],
+    word_pieces: &[WordPieceWithSource],
 ) -> Option<ArrayExpansionResult> {
-    if word_parts.len() != 1 {
+    if word_pieces.len() != 1 {
         return None;
     }
 
-    let dq_part = match &word_parts[0] {
-        WordPart::DoubleQuoted(dq) => dq,
+    // Must be a double-quoted sequence with a single parameter expansion
+    let dq_pieces = match &word_pieces[0].piece {
+        WordPiece::DoubleQuotedSequence(inner) => inner,
         _ => return None,
     };
 
-    if dq_part.parts.len() != 1 {
+    if dq_pieces.len() != 1 {
         return None;
     }
 
-    let param_part = match &dq_part.parts[0] {
-        WordPart::ParameterExpansion(pe) => pe,
+    let param_expr = match &dq_pieces[0].piece {
+        WordPiece::ParameterExpansion(expr) => expr,
         _ => return None,
     };
 
-    // Check if it's ONLY the array expansion (like "${a[@]}") without operations
-    if param_part.operation.is_some() {
-        return None;
-    }
+    // Must be a simple Parameter (no operations like Substring, Transform, etc.)
+    let (parameter, _indirect) = match param_expr {
+        ParameterExpr::Parameter { parameter, indirect } => (parameter, indirect),
+        _ => return None,
+    };
 
-    // Match array[@] pattern
-    let array_re = Regex::new(r"^([a-zA-Z_][a-zA-Z0-9_]*)\[(@)\]$").unwrap();
-    let caps = array_re.captures(&param_part.parameter)?;
-    let array_name = caps.get(1)?.as_str();
+    // Must be NamedWithAllIndices with concatenate=false (i.e., arr[@])
+    let array_name = match parameter {
+        Parameter::NamedWithAllIndices { name, concatenate } if !concatenate => name,
+        _ => return None,
+    };
 
     // Special case: if arrayName is a nameref pointing to array[@],
     // ${ref[@]} doesn't do double indirection - it returns empty
@@ -78,7 +83,7 @@ pub fn handle_simple_array_expansion(
     }
 
     // No array elements - check for scalar variable
-    if let Some(scalar_value) = state.env.get(array_name) {
+    if let Some(scalar_value) = state.env.get(array_name.as_str()) {
         return Some(ArrayExpansionResult {
             values: vec![scalar_value.clone()],
             quoted: true,
@@ -92,38 +97,38 @@ pub fn handle_simple_array_expansion(
     })
 }
 
-/// Handle namerefs pointing to array[@] - "${ref}" where ref='arr[@]'
-/// When a nameref points to array[@], expanding "$ref" should produce multiple words
-pub fn handle_nameref_array_expansion(
+/// Handle namerefs pointing to array[@] - "${ref}" where ref='arr[@]' (brush-parser types).
+/// When a nameref points to array[@], expanding "$ref" should produce multiple words.
+pub fn handle_nameref_array_expansion_bp(
     state: &InterpreterState,
-    word_parts: &[WordPart],
+    word_pieces: &[WordPieceWithSource],
 ) -> Option<ArrayExpansionResult> {
-    if word_parts.len() != 1 {
+    if word_pieces.len() != 1 {
         return None;
     }
 
-    let dq_part = match &word_parts[0] {
-        WordPart::DoubleQuoted(dq) => dq,
+    let dq_pieces = match &word_pieces[0].piece {
+        WordPiece::DoubleQuotedSequence(inner) => inner,
         _ => return None,
     };
 
-    if dq_part.parts.len() != 1 {
+    if dq_pieces.len() != 1 {
         return None;
     }
 
-    let var_name = match &dq_part.parts[0] {
-        WordPart::ParameterExpansion(pe) => {
-            if pe.operation.is_some() {
-                return None;
-            }
-            &pe.parameter
-        }
+    let param_expr = match &dq_pieces[0].piece {
+        WordPiece::ParameterExpansion(expr) => expr,
         _ => return None,
     };
 
-    // Check if it's a simple variable name (not already an array subscript)
-    let simple_var_re = Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").unwrap();
-    if !simple_var_re.is_match(var_name) || !is_nameref(state, var_name) {
+    // Must be a simple Parameter, no operations
+    let var_name = match param_expr {
+        ParameterExpr::Parameter { parameter: Parameter::Named(name), indirect: false } => name,
+        _ => return None,
+    };
+
+    // Check if it's a nameref
+    if !is_nameref(state, var_name) {
         return None;
     }
 
@@ -160,6 +165,7 @@ pub fn handle_nameref_array_expansion(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brush_parser::word::{SpecialParameter, WordPieceWithSource};
     use std::collections::HashMap;
 
     fn make_state() -> InterpreterState {
@@ -169,32 +175,43 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_handle_simple_array_expansion_empty() {
-        let state = make_state();
-        // Test with non-matching pattern
-        let parts = vec![WordPart::Literal(LiteralPart {
-            value: "foo".to_string(),
-        })];
-        assert!(handle_simple_array_expansion(&state, &parts).is_none());
+    fn make_piece_with_source(piece: WordPiece) -> WordPieceWithSource {
+        WordPieceWithSource {
+            piece,
+            start_index: 0,
+            end_index: 0,
+        }
     }
 
     #[test]
-    fn test_handle_simple_array_expansion_with_array() {
+    fn test_handle_simple_array_expansion_bp_empty() {
+        let state = make_state();
+        // Test with non-matching pattern (a plain text piece, not a double-quoted array expansion)
+        let pieces = vec![make_piece_with_source(WordPiece::Text("foo".to_string()))];
+        assert!(handle_simple_array_expansion_bp(&state, &pieces).is_none());
+    }
+
+    #[test]
+    fn test_handle_simple_array_expansion_bp_with_array() {
         let mut state = make_state();
         state.env.insert("arr_0".to_string(), "first".to_string());
         state.env.insert("arr_1".to_string(), "second".to_string());
         state.env.insert("arr_2".to_string(), "third".to_string());
 
-        // Create "${arr[@]}" word parts
-        let parts = vec![WordPart::DoubleQuoted(DoubleQuotedPart {
-            parts: vec![WordPart::ParameterExpansion(ParameterExpansionPart {
-                parameter: "arr[@]".to_string(),
-                operation: None,
-            })],
-        })];
+        // Create "${arr[@]}" word pieces
+        let pieces = vec![make_piece_with_source(WordPiece::DoubleQuotedSequence(vec![
+            make_piece_with_source(WordPiece::ParameterExpansion(
+                ParameterExpr::Parameter {
+                    parameter: Parameter::NamedWithAllIndices {
+                        name: "arr".to_string(),
+                        concatenate: false,
+                    },
+                    indirect: false,
+                },
+            )),
+        ]))];
 
-        let result = handle_simple_array_expansion(&state, &parts);
+        let result = handle_simple_array_expansion_bp(&state, &pieces);
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(result.values, vec!["first", "second", "third"]);
@@ -202,19 +219,24 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_simple_array_expansion_scalar() {
+    fn test_handle_simple_array_expansion_bp_scalar() {
         let mut state = make_state();
         state.env.insert("s".to_string(), "scalar".to_string());
 
-        // Create "${s[@]}" word parts
-        let parts = vec![WordPart::DoubleQuoted(DoubleQuotedPart {
-            parts: vec![WordPart::ParameterExpansion(ParameterExpansionPart {
-                parameter: "s[@]".to_string(),
-                operation: None,
-            })],
-        })];
+        // Create "${s[@]}" word pieces
+        let pieces = vec![make_piece_with_source(WordPiece::DoubleQuotedSequence(vec![
+            make_piece_with_source(WordPiece::ParameterExpansion(
+                ParameterExpr::Parameter {
+                    parameter: Parameter::NamedWithAllIndices {
+                        name: "s".to_string(),
+                        concatenate: false,
+                    },
+                    indirect: false,
+                },
+            )),
+        ]))];
 
-        let result = handle_simple_array_expansion(&state, &parts);
+        let result = handle_simple_array_expansion_bp(&state, &pieces);
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(result.values, vec!["scalar"]);

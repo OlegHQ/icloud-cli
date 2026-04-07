@@ -150,37 +150,46 @@ impl Bash {
             normalize_script(script)
         };
 
-        // Parse the script
-        match crate::parser::parse(&normalized) {
-            Ok(ast) => {
-                // Execute AST via interpreter
-                let fs = self.fs.clone();
-                let limits = self.limits.clone();
-                let state = &mut self.state;
-
-                // Use block_in_place to bridge async context with sync execution engine
-                tokio::task::block_in_place(|| {
-                    let handle = tokio::runtime::Handle::current();
-                    let sync_fs = crate::interpreter::SyncFsAdapter::new(fs, handle);
-                    let engine = crate::interpreter::ExecutionEngine::new(&limits, &sync_fs);
-
-                    match engine.execute_script(state, &ast) {
-                        Ok(result) => result,
-                        Err(crate::interpreter::InterpreterError::Exit(e)) => {
-                            ExecResult::new(e.stdout, e.stderr, e.exit_code)
-                        }
-                        Err(crate::interpreter::InterpreterError::ExecutionLimit(e)) => {
-                            ExecResult::new(e.stdout, e.stderr, 126)
-                        }
-                        Err(e) => ExecResult::new(String::new(), format!("{}\n", e), 1),
-                    }
-                })
-            }
+        // Parse the script using brush_parser
+        let tokens = match brush_parser::tokenize_str(&normalized) {
+            Ok(t) => t,
             Err(e) => {
-                let msg = e.to_string();
-                ExecResult::new(String::new(), format!("bash: syntax error: {}\n", msg), 2)
+                return ExecResult::new(String::new(), format!("bash: syntax error: {}\n", e), 2);
             }
-        }
+        };
+        let program = match brush_parser::parse_tokens(
+            &tokens,
+            &brush_parser::ParserOptions::default(),
+            &brush_parser::SourceInfo::default(),
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                return ExecResult::new(String::new(), format!("bash: syntax error: {}\n", e), 2);
+            }
+        };
+
+        // Execute AST via interpreter
+        let fs = self.fs.clone();
+        let limits = self.limits.clone();
+        let state = &mut self.state;
+
+        // Use block_in_place to bridge async context with sync execution engine
+        tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::current();
+            let sync_fs = crate::interpreter::SyncFsAdapter::new(fs, handle);
+            let engine = crate::interpreter::ExecutionEngine::new(&limits, &sync_fs);
+
+            match engine.execute_script(state, &program) {
+                Ok(result) => result,
+                Err(crate::interpreter::InterpreterError::Exit(e)) => {
+                    ExecResult::new(e.stdout, e.stderr, e.exit_code)
+                }
+                Err(crate::interpreter::InterpreterError::ExecutionLimit(e)) => {
+                    ExecResult::new(e.stdout, e.stderr, 126)
+                }
+                Err(e) => ExecResult::new(String::new(), format!("{}\n", e), 1),
+            }
+        })
     }
 
     /// Read a file relative to cwd.

@@ -17,7 +17,7 @@
 //! - Built-in commands (builtins/)
 //! - Redirections (redirections.rs)
 
-use crate::ast::types::{CommandNode, PipelineNode, ScriptNode, SimpleCommandNode, StatementNode};
+use brush_parser::ast as bast;
 use crate::interpreter::types::{ExecResult, ExecutionLimits, InterpreterState};
 use std::collections::HashMap;
 
@@ -106,15 +106,15 @@ pub trait CommandExecutor: Send + Sync {
 /// Used for eval, source, and other commands that need to
 /// execute parsed scripts.
 pub type ExecuteScriptFn =
-    Box<dyn Fn(&ScriptNode, &mut InterpreterState) -> ExecResult + Send + Sync>;
+    Box<dyn Fn(&bast::Program, &mut InterpreterState) -> ExecResult + Send + Sync>;
 
 /// Statement execution callback type.
 pub type ExecuteStatementFn =
-    Box<dyn Fn(&StatementNode, &mut InterpreterState, &str) -> ExecResult + Send + Sync>;
+    Box<dyn Fn(&bast::CompoundListItem, &mut InterpreterState, &str) -> ExecResult + Send + Sync>;
 
 /// Command execution callback type.
 pub type ExecuteCommandFn =
-    Box<dyn Fn(&CommandNode, &mut InterpreterState, &str) -> ExecResult + Send + Sync>;
+    Box<dyn Fn(&bast::Command, &mut InterpreterState, &str) -> ExecResult + Send + Sync>;
 
 /// Interpreter context passed to execution functions.
 ///

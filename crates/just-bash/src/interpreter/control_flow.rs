@@ -9,6 +9,8 @@
 //! - case statements
 //! - break/continue
 
+use brush_parser::ast as bast;
+
 use crate::interpreter::errors::{ExecutionLimitError, InterpreterError, LimitType};
 use crate::interpreter::helpers::condition::{execute_condition, ConditionResult};
 use crate::interpreter::helpers::loop_helpers::{handle_loop_error, LoopAction};
@@ -50,6 +52,17 @@ impl CaseTerminator {
             CaseTerminator::Break => ";;",
             CaseTerminator::FallThrough => ";&",
             CaseTerminator::ContinueMatching => ";;&",
+        }
+    }
+
+    /// Convert from brush-parser CaseItemPostAction.
+    pub fn from_post_action(action: &bast::CaseItemPostAction) -> Self {
+        match action {
+            bast::CaseItemPostAction::ExitCase => CaseTerminator::Break,
+            bast::CaseItemPostAction::UnconditionallyExecuteNextCaseItem => {
+                CaseTerminator::FallThrough
+            }
+            bast::CaseItemPostAction::ContinueEvaluatingCases => CaseTerminator::ContinueMatching,
         }
     }
 }
@@ -468,7 +481,7 @@ pub fn execute_case<P, B, F1, F2, E>(
     mut body_executor: F2,
 ) -> Result<ForResult, E>
 where
-    F1: FnMut(&InterpreterState, &str, &P) -> Result<bool, E>,
+    F1: FnMut(&mut InterpreterState, &str, &P) -> Result<bool, E>,
     F2: FnMut(&mut InterpreterState, &B) -> Result<ExecResult, E>,
 {
     let mut stdout = String::new();
@@ -544,5 +557,25 @@ mod tests {
         assert_eq!(CaseTerminator::Break.as_str(), ";;");
         assert_eq!(CaseTerminator::FallThrough.as_str(), ";&");
         assert_eq!(CaseTerminator::ContinueMatching.as_str(), ";;&");
+    }
+
+    #[test]
+    fn test_case_terminator_from_post_action() {
+        assert_eq!(
+            CaseTerminator::from_post_action(&bast::CaseItemPostAction::ExitCase),
+            CaseTerminator::Break
+        );
+        assert_eq!(
+            CaseTerminator::from_post_action(
+                &bast::CaseItemPostAction::UnconditionallyExecuteNextCaseItem
+            ),
+            CaseTerminator::FallThrough
+        );
+        assert_eq!(
+            CaseTerminator::from_post_action(
+                &bast::CaseItemPostAction::ContinueEvaluatingCases
+            ),
+            CaseTerminator::ContinueMatching
+        );
     }
 }

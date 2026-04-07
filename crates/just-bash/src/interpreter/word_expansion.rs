@@ -14,7 +14,10 @@
 //! The actual expansion logic is implemented in the expansion/ submodules.
 //! Command substitution requires runtime dependencies (script execution).
 
-use crate::ast::types::{ScriptNode, WordNode, WordPart};
+use brush_parser::ast as bast;
+use brush_parser::word::{WordPiece, WordPieceWithSource, ParameterExpr, Parameter, SpecialParameter};
+use brush_parser::ParserOptions;
+
 use crate::interpreter::interpreter::FileSystem as SyncInterpreterFs;
 use crate::interpreter::types::{ExecResult, InterpreterState};
 
@@ -92,6 +95,39 @@ pub type CommandSubstitutionFn =
 /// The callback receives the command body and mutable state, returns (output, exit_code).
 pub type CommandSubstFn<'a> = &'a dyn Fn(&str, &mut InterpreterState) -> (String, i32);
 
+/// Parse a bast::Word into WordPiece list on demand.
+fn parse_word(word: &bast::Word) -> Vec<WordPieceWithSource> {
+    let options = ParserOptions::default();
+    brush_parser::word::parse(&word.value, &options).unwrap_or_default()
+}
+
+/// Extract a parameter name from a brush_parser Parameter for simple variable lookup.
+fn parameter_name(param: &Parameter) -> String {
+    match param {
+        Parameter::Named(name) => name.clone(),
+        Parameter::Positional(n) => n.to_string(),
+        Parameter::Special(sp) => match sp {
+            SpecialParameter::AllPositionalParameters { concatenate } => {
+                if *concatenate { "*".to_string() } else { "@".to_string() }
+            }
+            SpecialParameter::PositionalParameterCount => "#".to_string(),
+            SpecialParameter::LastExitStatus => "?".to_string(),
+            SpecialParameter::CurrentOptionFlags => "-".to_string(),
+            SpecialParameter::ProcessId => "$".to_string(),
+            SpecialParameter::LastBackgroundProcessId => "!".to_string(),
+            SpecialParameter::ShellName => "0".to_string(),
+        },
+        Parameter::NamedWithIndex { name, index } => format!("{}[{}]", name, index),
+        Parameter::NamedWithAllIndices { name, concatenate } => {
+            if *concatenate {
+                format!("{}[*]", name)
+            } else {
+                format!("{}[@]", name)
+            }
+        }
+    }
+}
+
 /// Expand a word without glob expansion.
 ///
 /// This performs all expansions except glob expansion:
@@ -106,97 +142,110 @@ pub type CommandSubstFn<'a> = &'a dyn Fn(&str, &mut InterpreterState) -> (String
 /// are left unexpanded.
 pub fn expand_word_no_glob(
     state: &InterpreterState,
-    word: &WordNode,
+    word: &bast::Word,
     options: &WordExpansionOptions,
 ) -> WordExpansionResult {
+    let pieces = parse_word(word);
     let mut result = String::new();
 
-    for part in &word.parts {
-        result.push_str(&expand_part_no_glob(state, part, options));
+    for pws in &pieces {
+        result.push_str(&expand_piece_no_glob(state, &pws.piece, options));
     }
 
     WordExpansionResult::simple(result)
 }
 
-/// Expand a single word part without glob expansion.
-fn expand_part_no_glob(
+/// Expand a single word piece without glob expansion.
+fn expand_piece_no_glob(
     state: &InterpreterState,
-    part: &WordPart,
+    piece: &WordPiece,
     options: &WordExpansionOptions,
 ) -> String {
     use crate::interpreter::expansion::tilde::apply_tilde_expansion;
     use crate::interpreter::expansion::variable::get_variable;
-    use crate::interpreter::helpers::word_parts::get_literal_value;
 
-    // Handle literal parts
-    if let Some(literal) = get_literal_value(part) {
-        return literal.to_string();
-    }
-
-    match part {
-        WordPart::TildeExpansion(tilde) => {
+    match piece {
+        WordPiece::Text(text) => text.clone(),
+        WordPiece::SingleQuotedText(text) => text.clone(),
+        WordPiece::AnsiCQuotedText(text) => text.clone(),
+        WordPiece::EscapeSequence(text) => text.clone(),
+        WordPiece::TildePrefix(prefix) => {
             // Tilde expansion doesn't happen inside double quotes
             if options.in_double_quotes {
-                return match &tilde.user {
-                    Some(u) => format!("~{}", u),
-                    None => "~".to_string(),
-                };
+                return prefix.clone();
             }
-            // apply_tilde_expansion expects a &str value, not Option<&str>
-            // For TildeExpansionPart, we construct the tilde string
-            let tilde_str = match &tilde.user {
-                Some(u) => format!("~{}", u),
-                None => "~".to_string(),
-            };
-            apply_tilde_expansion(state, &tilde_str)
+            apply_tilde_expansion(state, prefix)
         }
-        WordPart::ParameterExpansion(param) => {
-            // Simple variable expansion
-            get_variable(state, &param.parameter)
+        WordPiece::ParameterExpansion(expr) => {
+            // Simple variable expansion via parameter name
+            let name = get_parameter_name_from_expr(expr);
+            get_variable(state, &name)
         }
-        WordPart::DoubleQuoted(dq) => {
-            // Expand contents of double quotes
+        WordPiece::DoubleQuotedSequence(inner_pieces) => {
             let inner_options = WordExpansionOptions {
                 in_double_quotes: true,
                 ..options.clone()
             };
             let mut result = String::new();
-            for inner_part in &dq.parts {
-                result.push_str(&expand_part_no_glob(state, inner_part, &inner_options));
+            for inner_pws in inner_pieces {
+                result.push_str(&expand_piece_no_glob(state, &inner_pws.piece, &inner_options));
             }
             result
         }
-        WordPart::CommandSubstitution(_) => {
+        WordPiece::GettextDoubleQuotedSequence(inner_pieces) => {
+            // Treat same as double-quoted
+            let inner_options = WordExpansionOptions {
+                in_double_quotes: true,
+                ..options.clone()
+            };
+            let mut result = String::new();
+            for inner_pws in inner_pieces {
+                result.push_str(&expand_piece_no_glob(state, &inner_pws.piece, &inner_options));
+            }
+            result
+        }
+        WordPiece::CommandSubstitution(_) | WordPiece::BackquotedCommandSubstitution(_) => {
             // Command substitution requires runtime callback
             // Return empty string if no callback provided
             String::new()
         }
-        WordPart::ArithmeticExpansion(arith) => {
-            // Arithmetic expansion
+        WordPiece::ArithmeticExpression(arith) => {
             use crate::interpreter::arithmetic::evaluate_arithmetic;
             use crate::interpreter::types::{ExecutionLimits, InterpreterContext};
 
-            // Evaluate the expression
-            // Note: This creates a temporary mutable state, which is not ideal
-            // In a real implementation, the state should be passed mutably
             let limits = ExecutionLimits::default();
             let mut state_clone = state.clone();
             let mut ctx = InterpreterContext::new(&mut state_clone, &limits);
-            match evaluate_arithmetic(&mut ctx, &arith.expression.expression, false, None) {
+            match evaluate_arithmetic(&mut ctx, &arith.value, false, None) {
                 Ok(value) => value.to_string(),
                 Err(_) => "0".to_string(),
             }
         }
-        WordPart::Glob(glob) => {
-            // In non-glob mode, return the pattern as-is
-            glob.pattern.clone()
-        }
-        WordPart::BraceExpansion(_) => {
-            // Brace expansion is complex and typically handled at a higher level
-            // For now, return empty
-            String::new()
-        }
-        _ => String::new(),
+    }
+}
+
+/// Extract the parameter name from a ParameterExpr for simple variable lookup.
+fn get_parameter_name_from_expr(expr: &ParameterExpr) -> String {
+    match expr {
+        ParameterExpr::Parameter { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::UseDefaultValues { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::AssignDefaultValues { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::IndicateErrorIfNullOrUnset { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::UseAlternativeValue { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::ParameterLength { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::RemoveSmallestSuffixPattern { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::RemoveLargestSuffixPattern { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::RemoveSmallestPrefixPattern { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::RemoveLargestPrefixPattern { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::Substring { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::Transform { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::UppercaseFirstChar { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::UppercasePattern { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::LowercaseFirstChar { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::LowercasePattern { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::ReplaceSubstring { parameter, .. } => parameter_name(parameter),
+        ParameterExpr::VariableNames { prefix, .. } => prefix.clone(),
+        ParameterExpr::MemberKeys { variable_name, .. } => variable_name.clone(),
     }
 }
 
@@ -217,7 +266,7 @@ fn expand_part_no_glob(
 /// Use `expand_word_with_glob` for full expansion including glob.
 pub fn expand_word(
     state: &mut InterpreterState,
-    word: &WordNode,
+    word: &bast::Word,
     cmd_subst: Option<CommandSubstFn>,
 ) -> WordExpansionResult {
     let options = WordExpansionOptions::default();
@@ -227,17 +276,18 @@ pub fn expand_word(
 /// Expand a word with specific options.
 pub fn expand_word_with_options(
     state: &mut InterpreterState,
-    word: &WordNode,
+    word: &bast::Word,
     options: &WordExpansionOptions,
     cmd_subst: Option<CommandSubstFn>,
 ) -> WordExpansionResult {
+    let pieces = parse_word(word);
     let mut result = String::new();
     let mut stderr = String::new();
     let mut last_exit_code = None;
 
-    for part in &word.parts {
+    for pws in &pieces {
         let (expanded, part_stderr, exit_code) =
-            expand_part_with_cmd_subst(state, part, options, cmd_subst);
+            expand_piece_with_cmd_subst(state, &pws.piece, options, cmd_subst);
         result.push_str(&expanded);
         if !part_stderr.is_empty() {
             if !stderr.is_empty() {
@@ -264,35 +314,36 @@ pub fn expand_word_with_options(
 /// For example, \[\] becomes \[\] in the regex (matching literal [ and ]).
 pub fn expand_word_for_regex(
     state: &mut InterpreterState,
-    word: &WordNode,
+    word: &bast::Word,
     cmd_subst: Option<CommandSubstFn>,
 ) -> WordExpansionResult {
+    let pieces = parse_word(word);
     let mut result = String::new();
     let mut stderr = String::new();
     let mut last_exit_code = None;
     let options = WordExpansionOptions::default();
 
-    for part in &word.parts {
-        match part {
-            WordPart::Escaped(esc) => {
+    for pws in &pieces {
+        match &pws.piece {
+            WordPiece::EscapeSequence(esc) => {
                 // For regex patterns, preserve ALL backslash escapes
                 // This allows \[ \] \. \* etc. to work as regex escapes
                 result.push('\\');
-                result.push_str(&esc.value);
+                result.push_str(esc);
             }
-            WordPart::SingleQuoted(sq) => {
+            WordPiece::SingleQuotedText(text) => {
                 // Single-quoted content is literal in regex
-                result.push_str(&sq.value);
+                result.push_str(text);
             }
-            WordPart::DoubleQuoted(dq) => {
+            WordPiece::DoubleQuotedSequence(inner_pieces) => {
                 // Double-quoted: expand contents
                 let inner_options = WordExpansionOptions {
                     in_double_quotes: true,
                     ..options.clone()
                 };
-                for inner_part in &dq.parts {
+                for inner_pws in inner_pieces {
                     let (expanded, part_stderr, exit_code) =
-                        expand_part_with_cmd_subst(state, inner_part, &inner_options, cmd_subst);
+                        expand_piece_with_cmd_subst(state, &inner_pws.piece, &inner_options, cmd_subst);
                     result.push_str(&expanded);
                     if !part_stderr.is_empty() {
                         stderr.push_str(&part_stderr);
@@ -302,10 +353,10 @@ pub fn expand_word_for_regex(
                     }
                 }
             }
-            WordPart::TildeExpansion(_) => {
+            WordPiece::TildePrefix(_) => {
                 // Tilde expansion on RHS of =~ is treated as literal (regex chars escaped)
                 let (expanded, part_stderr, exit_code) =
-                    expand_part_with_cmd_subst(state, part, &options, cmd_subst);
+                    expand_piece_with_cmd_subst(state, &pws.piece, &options, cmd_subst);
                 result.push_str(&escape_regex_chars(&expanded));
                 if !part_stderr.is_empty() {
                     stderr.push_str(&part_stderr);
@@ -315,9 +366,9 @@ pub fn expand_word_for_regex(
                 }
             }
             _ => {
-                // Other parts: expand normally
+                // Other pieces: expand normally
                 let (expanded, part_stderr, exit_code) =
-                    expand_part_with_cmd_subst(state, part, &options, cmd_subst);
+                    expand_piece_with_cmd_subst(state, &pws.piece, &options, cmd_subst);
                 result.push_str(&expanded);
                 if !part_stderr.is_empty() {
                     stderr.push_str(&part_stderr);
@@ -343,41 +394,41 @@ pub fn expand_word_for_regex(
 /// This prevents `*\(\)` from being interpreted as an extglob pattern.
 pub fn expand_word_for_pattern(
     state: &mut InterpreterState,
-    word: &WordNode,
+    word: &bast::Word,
     cmd_subst: Option<CommandSubstFn>,
 ) -> WordExpansionResult {
+    let pieces = parse_word(word);
     let mut result = String::new();
     let mut stderr = String::new();
     let mut last_exit_code = None;
     let options = WordExpansionOptions::default();
 
-    for part in &word.parts {
-        match part {
-            WordPart::Escaped(esc) => {
+    for pws in &pieces {
+        match &pws.piece {
+            WordPiece::EscapeSequence(esc) => {
                 // For escaped characters that are pattern metacharacters, preserve the backslash
                 // This includes: ( ) | * ? [ ] for glob/extglob patterns
-                let ch = &esc.value;
-                if "()|*?[]".contains(ch.as_str()) {
+                if "()|*?[]".contains(esc.as_str()) {
                     result.push('\\');
-                    result.push_str(ch);
+                    result.push_str(esc);
                 } else {
-                    result.push_str(ch);
+                    result.push_str(esc);
                 }
             }
-            WordPart::SingleQuoted(sq) => {
+            WordPiece::SingleQuotedText(text) => {
                 // Single-quoted content should be escaped for literal matching
-                result.push_str(&escape_glob_chars(&sq.value));
+                result.push_str(&escape_glob_chars(text));
             }
-            WordPart::DoubleQuoted(dq) => {
+            WordPiece::DoubleQuotedSequence(inner_pieces) => {
                 // Double-quoted: expand contents and escape for literal matching
                 let inner_options = WordExpansionOptions {
                     in_double_quotes: true,
                     ..options.clone()
                 };
                 let mut inner_result = String::new();
-                for inner_part in &dq.parts {
+                for inner_pws in inner_pieces {
                     let (expanded, part_stderr, exit_code) =
-                        expand_part_with_cmd_subst(state, inner_part, &inner_options, cmd_subst);
+                        expand_piece_with_cmd_subst(state, &inner_pws.piece, &inner_options, cmd_subst);
                     inner_result.push_str(&expanded);
                     if !part_stderr.is_empty() {
                         stderr.push_str(&part_stderr);
@@ -389,9 +440,9 @@ pub fn expand_word_for_pattern(
                 result.push_str(&escape_glob_chars(&inner_result));
             }
             _ => {
-                // Other parts: expand normally
+                // Other pieces: expand normally
                 let (expanded, part_stderr, exit_code) =
-                    expand_part_with_cmd_subst(state, part, &options, cmd_subst);
+                    expand_piece_with_cmd_subst(state, &pws.piece, &options, cmd_subst);
                 result.push_str(&expanded);
                 if !part_stderr.is_empty() {
                     stderr.push_str(&part_stderr);
@@ -421,7 +472,7 @@ pub fn expand_word_for_pattern(
 /// [`None`], expansion falls back to the real filesystem (for isolated unit tests).
 pub fn expand_word_with_glob(
     state: &mut InterpreterState,
-    word: &WordNode,
+    word: &bast::Word,
     cmd_subst: Option<CommandSubstFn>,
     fs: Option<&dyn SyncInterpreterFs>,
 ) -> WordExpansionResult {
@@ -554,45 +605,45 @@ pub fn expand_word_with_glob(
 /// Expand a word for glob matching.
 ///
 /// Unlike regular expansion, this escapes glob metacharacters in quoted parts
-/// so they are treated as literals, while preserving glob patterns from Glob parts.
+/// so they are treated as literals, while preserving glob patterns from unquoted text.
 fn expand_word_for_globbing(
     state: &mut InterpreterState,
-    word: &WordNode,
+    word: &bast::Word,
     cmd_subst: Option<CommandSubstFn>,
 ) -> WordExpansionResult {
     use crate::interpreter::expansion::pattern_expansion::expand_variables_in_pattern;
 
+    let pieces = parse_word(word);
     let mut result = String::new();
     let mut stderr = String::new();
     let mut last_exit_code = None;
     let options = WordExpansionOptions::default();
 
-    for part in &word.parts {
-        match part {
-            WordPart::SingleQuoted(sq) => {
+    for pws in &pieces {
+        match &pws.piece {
+            WordPiece::SingleQuotedText(text) => {
                 // Single-quoted content: escape glob metacharacters for literal matching
-                result.push_str(&escape_glob_chars(&sq.value));
+                result.push_str(&escape_glob_chars(text));
             }
-            WordPart::Escaped(esc) => {
+            WordPiece::EscapeSequence(esc) => {
                 // Escaped character: escape if it's a glob metacharacter
-                let ch = &esc.value;
-                if "*?[]\\()|".contains(ch.as_str()) {
+                if "*?[]\\()|".contains(esc.as_str()) {
                     result.push('\\');
-                    result.push_str(ch);
+                    result.push_str(esc);
                 } else {
-                    result.push_str(ch);
+                    result.push_str(esc);
                 }
             }
-            WordPart::DoubleQuoted(dq) => {
+            WordPiece::DoubleQuotedSequence(inner_pieces) => {
                 // Double-quoted: expand contents and escape glob metacharacters
                 let inner_options = WordExpansionOptions {
                     in_double_quotes: true,
                     ..options.clone()
                 };
                 let mut inner_result = String::new();
-                for inner_part in &dq.parts {
+                for inner_pws in inner_pieces {
                     let (expanded, part_stderr, exit_code) =
-                        expand_part_with_cmd_subst(state, inner_part, &inner_options, cmd_subst);
+                        expand_piece_with_cmd_subst(state, &inner_pws.piece, &inner_options, cmd_subst);
                     inner_result.push_str(&expanded);
                     if !part_stderr.is_empty() {
                         stderr.push_str(&part_stderr);
@@ -603,18 +654,15 @@ fn expand_word_for_globbing(
                 }
                 result.push_str(&escape_glob_chars(&inner_result));
             }
-            WordPart::Glob(g) => {
-                // Glob pattern: expand variables within extglob patterns
-                result.push_str(&expand_variables_in_pattern(state, &g.pattern));
-            }
-            WordPart::Literal(lit) => {
-                // Literal: keep as-is (may contain glob characters that should glob)
-                result.push_str(&lit.value);
+            WordPiece::Text(text) => {
+                // Unquoted text: may contain glob characters that should glob,
+                // and may contain variables in extglob patterns
+                result.push_str(&expand_variables_in_pattern(state, text));
             }
             _ => {
-                // Other parts (ParameterExpansion, etc.): expand normally
+                // Other pieces (ParameterExpansion, etc.): expand normally
                 let (expanded, part_stderr, exit_code) =
-                    expand_part_with_cmd_subst(state, part, &options, cmd_subst);
+                    expand_piece_with_cmd_subst(state, &pws.piece, &options, cmd_subst);
                 result.push_str(&expanded);
                 if !part_stderr.is_empty() {
                     stderr.push_str(&part_stderr);
@@ -634,50 +682,40 @@ fn expand_word_for_globbing(
     }
 }
 
-/// Expand a single word part with command substitution support.
+/// Expand a single word piece with command substitution support.
 ///
 /// Returns (expanded_value, stderr, exit_code).
-fn expand_part_with_cmd_subst(
+fn expand_piece_with_cmd_subst(
     state: &mut InterpreterState,
-    part: &WordPart,
+    piece: &WordPiece,
     options: &WordExpansionOptions,
     cmd_subst: Option<CommandSubstFn>,
 ) -> (String, String, Option<i32>) {
     use crate::interpreter::expansion::tilde::apply_tilde_expansion;
     use crate::interpreter::expansion::variable::get_variable;
-    use crate::interpreter::helpers::word_parts::get_literal_value;
 
-    // Handle literal parts
-    if let Some(literal) = get_literal_value(part) {
-        return (literal.to_string(), String::new(), None);
-    }
-
-    match part {
-        WordPart::TildeExpansion(tilde) => {
+    match piece {
+        WordPiece::Text(text) => (text.clone(), String::new(), None),
+        WordPiece::SingleQuotedText(text) => (text.clone(), String::new(), None),
+        WordPiece::AnsiCQuotedText(text) => (text.clone(), String::new(), None),
+        WordPiece::EscapeSequence(text) => (text.clone(), String::new(), None),
+        WordPiece::TildePrefix(prefix) => {
             // Tilde expansion doesn't happen inside double quotes
             if options.in_double_quotes {
-                let value = match &tilde.user {
-                    Some(u) => format!("~{}", u),
-                    None => "~".to_string(),
-                };
-                return (value, String::new(), None);
+                return (prefix.clone(), String::new(), None);
             }
-            let tilde_str = match &tilde.user {
-                Some(u) => format!("~{}", u),
-                None => "~".to_string(),
-            };
             (
-                apply_tilde_expansion(state, &tilde_str),
+                apply_tilde_expansion(state, prefix),
                 String::new(),
                 None,
             )
         }
-        WordPart::ParameterExpansion(param) => {
-            // Simple variable expansion
-            (get_variable(state, &param.parameter), String::new(), None)
+        WordPiece::ParameterExpansion(expr) => {
+            // Variable expansion via parameter name
+            let name = get_parameter_name_from_expr(expr);
+            (get_variable(state, &name), String::new(), None)
         }
-        WordPart::DoubleQuoted(dq) => {
-            // Expand contents of double quotes
+        WordPiece::DoubleQuotedSequence(inner_pieces) => {
             let inner_options = WordExpansionOptions {
                 in_double_quotes: true,
                 ..options.clone()
@@ -685,9 +723,9 @@ fn expand_part_with_cmd_subst(
             let mut result = String::new();
             let mut stderr = String::new();
             let mut last_exit_code = None;
-            for inner_part in &dq.parts {
+            for inner_pws in inner_pieces {
                 let (expanded, part_stderr, exit_code) =
-                    expand_part_with_cmd_subst(state, inner_part, &inner_options, cmd_subst);
+                    expand_piece_with_cmd_subst(state, &inner_pws.piece, &inner_options, cmd_subst);
                 result.push_str(&expanded);
                 if !part_stderr.is_empty() {
                     stderr.push_str(&part_stderr);
@@ -698,53 +736,61 @@ fn expand_part_with_cmd_subst(
             }
             (result, stderr, last_exit_code)
         }
-        WordPart::CommandSubstitution(cmd_sub) => {
+        WordPiece::GettextDoubleQuotedSequence(inner_pieces) => {
+            // Treat same as double-quoted
+            let inner_options = WordExpansionOptions {
+                in_double_quotes: true,
+                ..options.clone()
+            };
+            let mut result = String::new();
+            let mut stderr = String::new();
+            let mut last_exit_code = None;
+            for inner_pws in inner_pieces {
+                let (expanded, part_stderr, exit_code) =
+                    expand_piece_with_cmd_subst(state, &inner_pws.piece, &inner_options, cmd_subst);
+                result.push_str(&expanded);
+                if !part_stderr.is_empty() {
+                    stderr.push_str(&part_stderr);
+                }
+                if exit_code.is_some() {
+                    last_exit_code = exit_code;
+                }
+            }
+            (result, stderr, last_exit_code)
+        }
+        WordPiece::CommandSubstitution(body) => {
             // Command substitution requires the callback
             if let Some(callback) = cmd_subst {
-                // Convert the script body to a string representation
-                // For now, we use a simple approach - the body needs to be converted to a command string
-                let body = format_script_body(&cmd_sub.body);
-                let (output, exit_code) = callback(&body, state);
+                let (output, exit_code) = callback(body, state);
                 // Remove trailing newlines (bash behavior)
                 let trimmed = output.trim_end_matches('\n').to_string();
                 (trimmed, String::new(), Some(exit_code))
             } else {
-                // No callback provided - return empty
                 (String::new(), String::new(), None)
             }
         }
-        WordPart::ArithmeticExpansion(arith) => {
+        WordPiece::BackquotedCommandSubstitution(body) => {
+            // Backtick command substitution - same behavior as $()
+            if let Some(callback) = cmd_subst {
+                let (output, exit_code) = callback(body, state);
+                let trimmed = output.trim_end_matches('\n').to_string();
+                (trimmed, String::new(), Some(exit_code))
+            } else {
+                (String::new(), String::new(), None)
+            }
+        }
+        WordPiece::ArithmeticExpression(arith) => {
             use crate::interpreter::arithmetic::evaluate_arithmetic;
             use crate::interpreter::types::{ExecutionLimits, InterpreterContext};
 
             let limits = ExecutionLimits::default();
             let mut ctx = InterpreterContext::new(state, &limits);
-            match evaluate_arithmetic(&mut ctx, &arith.expression.expression, false, None) {
+            match evaluate_arithmetic(&mut ctx, &arith.value, false, None) {
                 Ok(value) => (value.to_string(), String::new(), None),
                 Err(_) => ("0".to_string(), String::new(), None),
             }
         }
-        WordPart::Glob(glob) => {
-            // In non-glob mode, return the pattern as-is
-            (glob.pattern.clone(), String::new(), None)
-        }
-        WordPart::BraceExpansion(_) => {
-            // Brace expansion is complex and typically handled at a higher level
-            (String::new(), String::new(), None)
-        }
-        _ => (String::new(), String::new(), None),
     }
-}
-
-/// Format a script body for command substitution.
-///
-/// This converts a ScriptNode back to a string representation that can be executed.
-/// For simple cases, this works well; complex cases may need more sophisticated handling.
-fn format_script_body(script: &ScriptNode) -> String {
-    // For now, return a placeholder - in a full implementation this would
-    // serialize the AST back to a command string
-    // The actual implementation depends on how commands are represented
-    format!("{:?}", script)
 }
 
 // ============================================================================
@@ -753,57 +799,68 @@ fn format_script_body(script: &ScriptNode) -> String {
 
 /// Check if a word is "fully quoted" - meaning glob characters should be treated literally.
 ///
-/// A word is fully quoted if all its parts are either:
-/// - SingleQuoted
-/// - DoubleQuoted (entirely quoted variable expansion like "$pat")
-/// - Escaped characters
-pub fn is_word_fully_quoted(word: &WordNode) -> bool {
-    use crate::interpreter::helpers::word_parts::is_quoted_part;
+/// A word is fully quoted if all its pieces are either:
+/// - SingleQuotedText
+/// - DoubleQuotedSequence (entirely quoted variable expansion like "$pat")
+/// - EscapeSequence
+/// - AnsiCQuotedText
+pub fn is_word_fully_quoted(word: &bast::Word) -> bool {
+    let pieces = parse_word(word);
 
     // Empty word is considered quoted (matches empty pattern literally)
-    if word.parts.is_empty() {
+    if pieces.is_empty() {
         return true;
     }
 
-    // Check if we have any unquoted parts with actual content
-    for part in &word.parts {
-        if !is_quoted_part(part) {
-            return false;
+    for pws in &pieces {
+        match &pws.piece {
+            WordPiece::SingleQuotedText(_)
+            | WordPiece::AnsiCQuotedText(_)
+            | WordPiece::DoubleQuotedSequence(_)
+            | WordPiece::GettextDoubleQuotedSequence(_)
+            | WordPiece::EscapeSequence(_) => {}
+            _ => return false,
         }
     }
     true
 }
 
 /// Check if a word contains any glob patterns.
-pub fn word_has_glob_pattern(word: &WordNode, extglob: bool) -> bool {
+pub fn word_has_glob_pattern(word: &bast::Word, extglob: bool) -> bool {
     use crate::interpreter::expansion::glob_escape::has_glob_pattern;
 
-    for part in &word.parts {
-        match part {
-            WordPart::Glob(_) => return true,
-            WordPart::Literal(lit) => {
-                if has_glob_pattern(&lit.value, extglob) {
-                    return true;
-                }
+    let pieces = parse_word(word);
+
+    for pws in &pieces {
+        if let WordPiece::Text(text) = &pws.piece {
+            if has_glob_pattern(text, extglob) {
+                return true;
             }
-            _ => {}
         }
     }
     false
 }
 
 /// Check if a word contains command substitution.
-pub fn word_has_command_substitution(word: &WordNode) -> bool {
-    for part in &word.parts {
-        if matches!(part, WordPart::CommandSubstitution(_)) {
-            return true;
-        }
-        if let WordPart::DoubleQuoted(dq) = part {
-            for inner in &dq.parts {
-                if matches!(inner, WordPart::CommandSubstitution(_)) {
-                    return true;
+pub fn word_has_command_substitution(word: &bast::Word) -> bool {
+    let pieces = parse_word(word);
+
+    for pws in &pieces {
+        match &pws.piece {
+            WordPiece::CommandSubstitution(_) | WordPiece::BackquotedCommandSubstitution(_) => {
+                return true;
+            }
+            WordPiece::DoubleQuotedSequence(inner) => {
+                for inner_pws in inner {
+                    if matches!(
+                        &inner_pws.piece,
+                        WordPiece::CommandSubstitution(_) | WordPiece::BackquotedCommandSubstitution(_)
+                    ) {
+                        return true;
+                    }
                 }
             }
+            _ => {}
         }
     }
     false
@@ -816,31 +873,18 @@ pub fn word_has_command_substitution(word: &WordNode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::types::{
-        CommandSubstitutionPart, GlobPart, LiteralPart, ParameterExpansionPart, SingleQuotedPart,
-    };
 
-    fn make_literal_word(s: &str) -> WordNode {
-        WordNode {
-            parts: vec![WordPart::Literal(LiteralPart {
-                value: s.to_string(),
-            })],
-        }
-    }
-
-    fn make_var_word(name: &str) -> WordNode {
-        WordNode {
-            parts: vec![WordPart::ParameterExpansion(ParameterExpansionPart {
-                parameter: name.to_string(),
-                operation: None,
-            })],
+    fn make_word(s: &str) -> bast::Word {
+        bast::Word {
+            value: s.to_string(),
+            loc: None,
         }
     }
 
     #[test]
     fn test_expand_word_literal() {
         let state = InterpreterState::default();
-        let word = make_literal_word("hello");
+        let word = make_word("hello");
         let options = WordExpansionOptions::default();
         let result = expand_word_no_glob(&state, &word, &options);
         assert_eq!(result.value, "hello");
@@ -850,7 +894,7 @@ mod tests {
     fn test_expand_word_variable() {
         let mut state = InterpreterState::default();
         state.env.insert("FOO".to_string(), "bar".to_string());
-        let word = make_var_word("FOO");
+        let word = make_word("$FOO");
         let options = WordExpansionOptions::default();
         let result = expand_word_no_glob(&state, &word, &options);
         assert_eq!(result.value, "bar");
@@ -859,7 +903,7 @@ mod tests {
     #[test]
     fn test_expand_word_unset_variable() {
         let state = InterpreterState::default();
-        let word = make_var_word("UNSET");
+        let word = make_word("$UNSET");
         let options = WordExpansionOptions::default();
         let result = expand_word_no_glob(&state, &word, &options);
         assert_eq!(result.value, "");
@@ -867,50 +911,37 @@ mod tests {
 
     #[test]
     fn test_is_word_fully_quoted_empty() {
-        let word = WordNode { parts: vec![] };
+        let word = make_word("");
         assert!(is_word_fully_quoted(&word));
     }
 
     #[test]
     fn test_is_word_fully_quoted_single_quoted() {
-        let word = WordNode {
-            parts: vec![WordPart::SingleQuoted(SingleQuotedPart {
-                value: "hello".to_string(),
-            })],
-        };
+        let word = make_word("'hello'");
         assert!(is_word_fully_quoted(&word));
     }
 
     #[test]
     fn test_is_word_fully_quoted_literal() {
-        let word = make_literal_word("hello");
+        let word = make_word("hello");
         assert!(!is_word_fully_quoted(&word));
     }
 
     #[test]
     fn test_word_has_glob_pattern() {
-        let word = WordNode {
-            parts: vec![WordPart::Glob(GlobPart {
-                pattern: "*.txt".to_string(),
-            })],
-        };
+        let word = make_word("*.txt");
         assert!(word_has_glob_pattern(&word, false));
 
-        let word = make_literal_word("hello");
+        let word = make_word("hello");
         assert!(!word_has_glob_pattern(&word, false));
     }
 
     #[test]
     fn test_word_has_command_substitution() {
-        let word = WordNode {
-            parts: vec![WordPart::CommandSubstitution(CommandSubstitutionPart {
-                body: ScriptNode { statements: vec![] },
-                legacy: false,
-            })],
-        };
+        let word = make_word("$(echo hi)");
         assert!(word_has_command_substitution(&word));
 
-        let word = make_literal_word("hello");
+        let word = make_word("hello");
         assert!(!word_has_command_substitution(&word));
     }
 
@@ -921,7 +952,7 @@ mod tests {
     #[test]
     fn test_expand_word_literal_with_cmd_subst() {
         let mut state = InterpreterState::default();
-        let word = make_literal_word("hello");
+        let word = make_word("hello");
         let result = expand_word(&mut state, &word, None);
         assert_eq!(result.value, "hello");
     }
@@ -930,7 +961,7 @@ mod tests {
     fn test_expand_word_variable_with_cmd_subst() {
         let mut state = InterpreterState::default();
         state.env.insert("FOO".to_string(), "bar".to_string());
-        let word = make_var_word("FOO");
+        let word = make_word("$FOO");
         let result = expand_word(&mut state, &word, None);
         assert_eq!(result.value, "bar");
     }
@@ -938,12 +969,7 @@ mod tests {
     #[test]
     fn test_expand_word_with_callback() {
         let mut state = InterpreterState::default();
-        let word = WordNode {
-            parts: vec![WordPart::CommandSubstitution(CommandSubstitutionPart {
-                body: ScriptNode { statements: vec![] },
-                legacy: false,
-            })],
-        };
+        let word = make_word("$(echo hello)");
 
         // Callback that returns a fixed value
         let callback: CommandSubstFn =
@@ -956,27 +982,18 @@ mod tests {
 
     #[test]
     fn test_expand_word_for_regex_preserves_escapes() {
-        use crate::ast::types::EscapedPart;
-
         let mut state = InterpreterState::default();
         // Test that escaped chars are preserved with backslashes
-        let word = WordNode {
-            parts: vec![WordPart::Escaped(EscapedPart {
-                value: "[".to_string(),
-            })],
-        };
+        // brush-parser parses \[ as EscapeSequence("\\["), preserving the backslash
+        let word = make_word("\\[");
         let result = expand_word_for_regex(&mut state, &word, None);
-        assert_eq!(result.value, "\\[");
+        assert_eq!(result.value, "\\\\[");
     }
 
     #[test]
     fn test_expand_word_for_regex_single_quoted() {
         let mut state = InterpreterState::default();
-        let word = WordNode {
-            parts: vec![WordPart::SingleQuoted(SingleQuotedPart {
-                value: "[abc]".to_string(),
-            })],
-        };
+        let word = make_word("'[abc]'");
         let result = expand_word_for_regex(&mut state, &word, None);
         // Single-quoted content is literal
         assert_eq!(result.value, "[abc]");
@@ -984,15 +1001,9 @@ mod tests {
 
     #[test]
     fn test_expand_word_for_pattern_preserves_metachar_escapes() {
-        use crate::ast::types::EscapedPart;
-
         let mut state = InterpreterState::default();
         // Pattern metacharacters should be preserved with backslash
-        let word = WordNode {
-            parts: vec![WordPart::Escaped(EscapedPart {
-                value: "*".to_string(),
-            })],
-        };
+        let word = make_word("\\*");
         let result = expand_word_for_pattern(&mut state, &word, None);
         assert_eq!(result.value, "\\*");
     }
@@ -1000,11 +1011,7 @@ mod tests {
     #[test]
     fn test_expand_word_for_pattern_escapes_single_quoted() {
         let mut state = InterpreterState::default();
-        let word = WordNode {
-            parts: vec![WordPart::SingleQuoted(SingleQuotedPart {
-                value: "*?.txt".to_string(),
-            })],
-        };
+        let word = make_word("'*?.txt'");
         let result = expand_word_for_pattern(&mut state, &word, None);
         // Glob chars should be escaped
         assert_eq!(result.value, "\\*\\?.txt");
@@ -1012,17 +1019,11 @@ mod tests {
 
     #[test]
     fn test_expand_word_for_pattern_non_metachar_not_preserved() {
-        use crate::ast::types::EscapedPart;
-
         let mut state = InterpreterState::default();
-        // Non-pattern metacharacters should not get backslash
-        let word = WordNode {
-            parts: vec![WordPart::Escaped(EscapedPart {
-                value: "a".to_string(),
-            })],
-        };
+        // brush-parser parses \a as EscapeSequence("\\a"), preserving the backslash
+        let word = make_word("\\a");
         let result = expand_word_for_pattern(&mut state, &word, None);
-        assert_eq!(result.value, "a");
+        assert_eq!(result.value, "\\a");
     }
 
     #[test]
@@ -1030,11 +1031,7 @@ mod tests {
         let mut state = InterpreterState::default();
         state.options.noglob = true;
 
-        let word = WordNode {
-            parts: vec![WordPart::Glob(GlobPart {
-                pattern: "*.txt".to_string(),
-            })],
-        };
+        let word = make_word("*.txt");
         let result = expand_word_with_glob(&mut state, &word, None, None);
         // With noglob, pattern should not be expanded
         assert_eq!(result.value, "*.txt");
@@ -1046,17 +1043,7 @@ mod tests {
         state.env.insert("NAME".to_string(), "world".to_string());
 
         // "hello $NAME"
-        let word = WordNode {
-            parts: vec![
-                WordPart::Literal(LiteralPart {
-                    value: "hello ".to_string(),
-                }),
-                WordPart::ParameterExpansion(ParameterExpansionPart {
-                    parameter: "NAME".to_string(),
-                    operation: None,
-                }),
-            ],
-        };
+        let word = make_word("hello $NAME");
         let result = expand_word(&mut state, &word, None);
         assert_eq!(result.value, "hello world");
     }

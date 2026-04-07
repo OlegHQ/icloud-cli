@@ -1,36 +1,36 @@
 //! Word Part Helper Functions
 //!
-//! Provides common operations on WordPart types to eliminate duplication
+//! Provides common operations on WordPiece types to eliminate duplication
 //! across expansion and word parsing.
 
-use crate::{
-    DoubleQuotedPart, EscapedPart, LiteralPart, ParameterExpansionPart, SingleQuotedPart, WordPart,
-};
+use brush_parser::word::WordPiece;
 
-/// Get the literal string value from a word part.
-/// Returns the value for Literal, SingleQuoted, and Escaped parts.
-/// Returns None for complex parts that require expansion.
-pub fn get_literal_value(part: &WordPart) -> Option<&str> {
-    match part {
-        WordPart::Literal(LiteralPart { value }) => Some(value),
-        WordPart::SingleQuoted(SingleQuotedPart { value }) => Some(value),
-        WordPart::Escaped(EscapedPart { value }) => Some(value),
+/// Get the text string value from a word piece.
+/// Returns the value for Text, SingleQuotedText, and EscapeSequence pieces.
+/// Returns None for complex pieces that require expansion.
+pub fn get_literal_value(piece: &WordPiece) -> Option<&str> {
+    match piece {
+        WordPiece::Text(s) => Some(s),
+        WordPiece::SingleQuotedText(s) => Some(s),
+        WordPiece::EscapeSequence(s) => Some(s),
         _ => None,
     }
 }
 
-/// Check if a word part is "quoted" - meaning glob characters should be treated literally.
-/// A part is quoted if it is:
-/// - SingleQuoted
-/// - Escaped
-/// - DoubleQuoted (entirely quoted)
-/// - Literal with empty value (doesn't affect quoting)
-pub fn is_quoted_part(part: &WordPart) -> bool {
-    match part {
-        WordPart::SingleQuoted(_) => true,
-        WordPart::Escaped(_) => true,
-        WordPart::DoubleQuoted(_) => true,
-        WordPart::Literal(LiteralPart { value }) => value.is_empty(),
+/// Check if a word piece is "quoted" - meaning glob characters should be treated literally.
+/// A piece is quoted if it is:
+/// - SingleQuotedText
+/// - EscapeSequence
+/// - DoubleQuotedSequence (entirely quoted)
+/// - AnsiCQuotedText
+/// - Text with empty value (doesn't affect quoting)
+pub fn is_quoted_part(piece: &WordPiece) -> bool {
+    match piece {
+        WordPiece::SingleQuotedText(_) => true,
+        WordPiece::EscapeSequence(_) => true,
+        WordPiece::DoubleQuotedSequence(_) => true,
+        WordPiece::AnsiCQuotedText(_) => true,
+        WordPiece::Text(s) => s.is_empty(),
         _ => false,
     }
 }
@@ -42,54 +42,37 @@ mod tests {
     #[test]
     fn test_get_literal_value() {
         assert_eq!(
-            get_literal_value(&WordPart::Literal(LiteralPart {
-                value: "hello".to_string()
-            })),
+            get_literal_value(&WordPiece::Text("hello".to_string())),
             Some("hello")
         );
         assert_eq!(
-            get_literal_value(&WordPart::SingleQuoted(SingleQuotedPart {
-                value: "world".to_string()
-            })),
+            get_literal_value(&WordPiece::SingleQuotedText("world".to_string())),
             Some("world")
         );
         assert_eq!(
-            get_literal_value(&WordPart::Escaped(EscapedPart {
-                value: "n".to_string()
-            })),
+            get_literal_value(&WordPiece::EscapeSequence("n".to_string())),
             Some("n")
         );
         assert_eq!(
-            get_literal_value(&WordPart::ParameterExpansion(ParameterExpansionPart {
-                parameter: "var".to_string(),
-                operation: None,
-            })),
+            get_literal_value(&WordPiece::CommandSubstitution("cmd".to_string())),
             None
         );
     }
 
     #[test]
     fn test_is_quoted_part() {
-        assert!(is_quoted_part(&WordPart::SingleQuoted(SingleQuotedPart {
-            value: "test".to_string()
-        })));
-        assert!(is_quoted_part(&WordPart::Escaped(EscapedPart {
-            value: "n".to_string()
-        })));
-        assert!(is_quoted_part(&WordPart::DoubleQuoted(DoubleQuotedPart {
-            parts: vec![]
-        })));
-        assert!(is_quoted_part(&WordPart::Literal(LiteralPart {
-            value: "".to_string()
-        })));
-        assert!(!is_quoted_part(&WordPart::Literal(LiteralPart {
-            value: "test".to_string()
-        })));
-        assert!(!is_quoted_part(&WordPart::ParameterExpansion(
-            ParameterExpansionPart {
-                parameter: "var".to_string(),
-                operation: None,
-            }
+        assert!(is_quoted_part(&WordPiece::SingleQuotedText(
+            "test".to_string()
+        )));
+        assert!(is_quoted_part(&WordPiece::EscapeSequence("n".to_string())));
+        assert!(is_quoted_part(&WordPiece::DoubleQuotedSequence(vec![])));
+        assert!(is_quoted_part(&WordPiece::AnsiCQuotedText(
+            "test".to_string()
+        )));
+        assert!(is_quoted_part(&WordPiece::Text("".to_string())));
+        assert!(!is_quoted_part(&WordPiece::Text("test".to_string())));
+        assert!(!is_quoted_part(&WordPiece::CommandSubstitution(
+            "cmd".to_string()
         )));
     }
 }

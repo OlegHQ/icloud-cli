@@ -2,8 +2,18 @@
 //!
 //! Type definitions for the bash interpreter state and context.
 
-use crate::FunctionDefNode;
+use brush_parser::ast as bast;
 use std::collections::{HashMap, HashSet};
+
+/// Wrapper around brush-parser's `FunctionDefinition` that tracks the source file
+/// where the function was defined (needed for `BASH_SOURCE`).
+#[derive(Debug, Clone)]
+pub struct StoredFunction {
+    /// The parsed function definition from brush-parser.
+    pub def: bast::FunctionDefinition,
+    /// Source file where this function was defined.
+    pub source_file: Option<String>,
+}
 
 /// Completion specification for a command, set by the `complete` builtin.
 #[derive(Debug, Clone, Default)]
@@ -210,8 +220,8 @@ pub struct InterpreterState {
     pub accessed_temp_env_vars: Option<HashSet<String>>,
 
     // ---- Call Stack ----
-    /// Function definitions (name -> AST node)
-    pub functions: HashMap<String, FunctionDefNode>,
+    /// Function definitions (name -> stored function with source tracking)
+    pub functions: HashMap<String, StoredFunction>,
     /// Current function call depth (for recursion limits and local scoping)
     pub call_depth: u32,
     /// Current source script nesting depth (for return in sourced scripts)

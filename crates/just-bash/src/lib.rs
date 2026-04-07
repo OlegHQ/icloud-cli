@@ -8,7 +8,6 @@
 #![allow(clippy::pedantic)]
 #![allow(clippy::nursery)]
 
-pub mod ast;
 pub mod bash;
 pub mod commands;
 pub mod fs;
@@ -19,10 +18,13 @@ pub mod parser;
 pub mod sandbox;
 pub mod shell;
 
-pub use ast::types::*;
 pub use bash::Bash;
 pub use commands::{Command, CommandContext, CommandResult};
 pub use fs::{FileSystem, InMemoryFs};
-pub use parser::{parse, ParseException, Parser};
+pub use parser::parse;
 #[cfg(feature = "sandbox")]
 pub use sandbox::Sandbox;
+
+// Re-export brush-parser types that downstream consumers need
+pub use brush_parser::ast;
+pub use brush_parser::ParseError;

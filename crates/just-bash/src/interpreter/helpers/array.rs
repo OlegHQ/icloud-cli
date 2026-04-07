@@ -2,10 +2,7 @@
 //!
 //! Provides utilities for working with bash arrays (both indexed and associative).
 
-use crate::{
-    BraceExpansionPart, BraceItem, DoubleQuotedPart, EscapedPart, GlobPart, LiteralPart,
-    SingleQuotedPart, TildeExpansionPart, WordNode, WordPart,
-};
+use brush_parser::ast as bast;
 use std::collections::HashMap;
 
 /// Get all indices of an array, sorted in ascending order.
@@ -81,226 +78,71 @@ pub fn unquote_key(key: &str) -> &str {
     }
 }
 
-/// Parsed keyed array element from an AST WordNode like [key]=value or [key]+=value.
+/// Parsed keyed array element from a Word like [key]=value or [key]+=value.
 #[derive(Debug, Clone)]
 pub struct ParsedKeyedElement {
     pub key: String,
-    pub value_parts: Vec<WordPart>,
+    pub value: String,
     pub append: bool,
 }
 
-/// Parse a keyed array element from an AST WordNode like [key]=value or [key]+=value.
+/// Parse a keyed array element from a Word like [key]=value or [key]+=value.
+/// Since `bast::Word` is a string wrapper, this parses the pattern from the string value.
 /// Returns None if not a keyed element pattern.
-pub fn parse_keyed_element_from_word(word: &WordNode) -> Option<ParsedKeyedElement> {
-    if word.parts.len() < 2 {
+pub fn parse_keyed_element_from_word(word: &bast::Word) -> Option<ParsedKeyedElement> {
+    let s = &word.value;
+
+    // Must start with '['
+    if !s.starts_with('[') {
         return None;
     }
 
-    let first = &word.parts[0];
-    let second = &word.parts[1];
-
-    // Check for [key]= or [key]+= pattern
-    // First part should be a Glob with pattern like "[key]" or just "["
-    let glob_pattern = match first {
-        WordPart::Glob(GlobPart { pattern }) if pattern.starts_with('[') => pattern.as_str(),
-        _ => return None,
-    };
-
-    let mut key: String;
-    let mut second_part_index = 1;
-
-    // Check if this is a nested bracket case by looking at second
-    match second {
-        WordPart::Literal(LiteralPart { value }) if value.starts_with(']') => {
-            // Nested bracket case: [a[0]]= is parsed as Glob("[a[0]") + Literal("]=...")
-            let after_bracket = &value[1..]; // Remove the leading ]
-
-            if after_bracket.starts_with("+=") || after_bracket.starts_with('=') {
-                key = glob_pattern[1..].to_string();
-            } else if after_bracket.is_empty() {
-                // The ] was the whole second part, check third part for = or +=
-                if word.parts.len() < 3 {
-                    return None;
-                }
-                let third = &word.parts[2];
-                match third {
-                    WordPart::Literal(LiteralPart { value })
-                        if value.starts_with('=') || value.starts_with("+=") =>
-                    {
-                        key = glob_pattern[1..].to_string();
-                        second_part_index = 2;
-                    }
-                    _ => return None,
-                }
-            } else {
-                return None;
-            }
-        }
-        WordPart::DoubleQuoted(_) | WordPart::SingleQuoted(_) if glob_pattern == "[" => {
-            // Double/single-quoted key case: ["key"]= or ['key']=
-            if word.parts.len() < 3 {
-                return None;
-            }
-            let third = &word.parts[2];
-            match third {
-                WordPart::Literal(LiteralPart { value })
-                    if value.starts_with("]=") || value.starts_with("]+=") =>
-                {
-                    // Extract key from the quoted part
-                    key = match second {
-                        WordPart::SingleQuoted(SingleQuotedPart { value }) => value.clone(),
-                        WordPart::DoubleQuoted(DoubleQuotedPart { parts }) => {
-                            let mut k = String::new();
-                            for inner in parts {
-                                match inner {
-                                    WordPart::Literal(LiteralPart { value }) => k.push_str(value),
-                                    WordPart::Escaped(EscapedPart { value }) => k.push_str(value),
-                                    _ => {}
-                                }
-                            }
-                            k
-                        }
-                        _ => return None,
-                    };
-                    second_part_index = 2;
-                }
-                _ => return None,
-            }
-        }
-        WordPart::Literal(LiteralPart { value }) if glob_pattern.ends_with(']') => {
-            // Normal case: [key]= where key has no nested brackets
-            if !value.starts_with('=') && !value.starts_with("+=") {
-                return None;
-            }
-            // Extract key from the Glob pattern (remove [ and ])
-            key = glob_pattern[1..glob_pattern.len() - 1].to_string();
-        }
-        _ => return None,
-    }
-
-    // Remove surrounding quotes from key
-    key = unquote_key(&key).to_string();
-
-    // Get the actual content after = or += from second_part
-    let second_part = &word.parts[second_part_index];
-    let assignment_content = match second_part {
-        WordPart::Literal(LiteralPart { value }) => {
-            if value.starts_with("]=") {
-                &value[1..]
-            } else if value.starts_with("]+=") {
-                &value[1..]
-            } else {
-                value.as_str()
-            }
-        }
-        _ => return None,
-    };
-
-    // Determine if this is an append operation
-    let append = assignment_content.starts_with("+=");
-    if !append && !assignment_content.starts_with('=') {
-        return None;
-    }
-
-    // Extract value parts: everything after the = (or +=)
-    let mut value_parts: Vec<WordPart> = Vec::new();
-
-    // The second part may have content after the = sign
-    let eq_len = if append { 2 } else { 1 }; // "+=" vs "="
-    let after_eq = &assignment_content[eq_len..];
-    if !after_eq.is_empty() {
-        value_parts.push(WordPart::Literal(LiteralPart {
-            value: after_eq.to_string(),
-        }));
-    }
-
-    // Add remaining parts (parts[second_part_index+1], etc.)
-    // Converting BraceExpansion to Literal
-    for i in (second_part_index + 1)..word.parts.len() {
-        let part = &word.parts[i];
-        match part {
-            WordPart::BraceExpansion(brace) => {
-                // Convert brace expansion to literal string
-                value_parts.push(WordPart::Literal(LiteralPart {
-                    value: brace_to_literal(brace),
-                }));
-            }
-            _ => value_parts.push(part.clone()),
-        }
-    }
-
-    Some(ParsedKeyedElement {
-        key,
-        value_parts,
-        append,
-    })
-}
-
-/// Convert a BraceExpansion node back to its literal form.
-/// e.g., {a,b,c} or {1..5}
-fn brace_to_literal(part: &BraceExpansionPart) -> String {
-    let items: Vec<String> = part
-        .items
-        .iter()
-        .map(|item| match item {
-            BraceItem::Range {
-                start,
-                end,
-                step,
-                start_str,
-                end_str,
-            } => {
-                let start_s = start_str
-                    .as_ref()
-                    .map_or_else(|| start.to_string(), |s| s.clone());
-                let end_s = end_str
-                    .as_ref()
-                    .map_or_else(|| end.to_string(), |s| s.clone());
-                let mut range = format!("{}..{}", start_s, end_s);
-                if let Some(s) = step {
-                    range.push_str(&format!("..{}", s));
-                }
-                range
-            }
-            BraceItem::Word { word } => word_to_literal_string(word),
-        })
-        .collect();
-    format!("{{{}}}", items.join(","))
-}
-
-/// Extract literal string content from a Word node (without expansion).
-/// This is used for parsing associative array element syntax like [key]=value
-/// where the [key] part may be parsed as a Glob.
-pub fn word_to_literal_string(word: &WordNode) -> String {
-    let mut result = String::new();
-    for part in &word.parts {
-        match part {
-            WordPart::Literal(LiteralPart { value }) => result.push_str(value),
-            WordPart::Glob(GlobPart { pattern }) => result.push_str(pattern),
-            WordPart::SingleQuoted(SingleQuotedPart { value }) => result.push_str(value),
-            WordPart::DoubleQuoted(DoubleQuotedPart { parts }) => {
-                for inner in parts {
-                    match inner {
-                        WordPart::Literal(LiteralPart { value }) => result.push_str(value),
-                        WordPart::Escaped(EscapedPart { value }) => result.push_str(value),
-                        _ => {}
-                    }
-                }
-            }
-            WordPart::Escaped(EscapedPart { value }) => result.push_str(value),
-            WordPart::BraceExpansion(brace) => {
-                result.push_str(&brace_to_literal(brace));
-            }
-            WordPart::TildeExpansion(TildeExpansionPart { user }) => {
-                result.push('~');
-                if let Some(u) = user {
-                    result.push_str(u);
+    // Find the closing bracket - handle nested brackets
+    let mut depth = 0;
+    let mut bracket_end = None;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    bracket_end = Some(i);
+                    break;
                 }
             }
             _ => {}
         }
     }
-    result
+
+    let bracket_end = bracket_end?;
+
+    // Extract key (between [ and ])
+    let mut key = s[1..bracket_end].to_string();
+
+    // After the ']', expect '=' or '+='
+    let after_bracket = &s[bracket_end + 1..];
+    let (append, value_str) = if let Some(rest) = after_bracket.strip_prefix("+=") {
+        (true, rest)
+    } else if let Some(rest) = after_bracket.strip_prefix('=') {
+        (false, rest)
+    } else {
+        return None;
+    };
+
+    // Remove surrounding quotes from key
+    key = unquote_key(&key).to_string();
+
+    Some(ParsedKeyedElement {
+        key,
+        value: value_str.to_string(),
+        append,
+    })
+}
+
+/// Extract literal string content from a Word.
+/// Since `bast::Word` is a string wrapper, this simply returns the value.
+pub fn word_to_literal_string(word: &bast::Word) -> String {
+    word.value.clone()
 }
 
 /// Get an array element value.
@@ -434,5 +276,67 @@ mod tests {
             Some(&"qux".to_string())
         );
         assert_eq!(get_assoc_array_element(&env, "map", "missing"), None);
+    }
+
+    #[test]
+    fn test_parse_keyed_element_simple() {
+        let word = bast::Word {
+            value: "[foo]=bar".to_string(),
+            loc: None,
+        };
+        let parsed = parse_keyed_element_from_word(&word).unwrap();
+        assert_eq!(parsed.key, "foo");
+        assert_eq!(parsed.value, "bar");
+        assert!(!parsed.append);
+    }
+
+    #[test]
+    fn test_parse_keyed_element_append() {
+        let word = bast::Word {
+            value: "[foo]+=bar".to_string(),
+            loc: None,
+        };
+        let parsed = parse_keyed_element_from_word(&word).unwrap();
+        assert_eq!(parsed.key, "foo");
+        assert_eq!(parsed.value, "bar");
+        assert!(parsed.append);
+    }
+
+    #[test]
+    fn test_parse_keyed_element_quoted_key() {
+        let word = bast::Word {
+            value: "[\"hello\"]=world".to_string(),
+            loc: None,
+        };
+        let parsed = parse_keyed_element_from_word(&word).unwrap();
+        assert_eq!(parsed.key, "hello");
+        assert_eq!(parsed.value, "world");
+    }
+
+    #[test]
+    fn test_parse_keyed_element_not_keyed() {
+        let word = bast::Word {
+            value: "notkeyed".to_string(),
+            loc: None,
+        };
+        assert!(parse_keyed_element_from_word(&word).is_none());
+    }
+
+    #[test]
+    fn test_parse_keyed_element_no_equals() {
+        let word = bast::Word {
+            value: "[key]value".to_string(),
+            loc: None,
+        };
+        assert!(parse_keyed_element_from_word(&word).is_none());
+    }
+
+    #[test]
+    fn test_word_to_literal_string() {
+        let word = bast::Word {
+            value: "hello world".to_string(),
+            loc: None,
+        };
+        assert_eq!(word_to_literal_string(&word), "hello world");
     }
 }

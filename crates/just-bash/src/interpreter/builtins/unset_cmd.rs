@@ -195,22 +195,20 @@ fn is_quoted_string_index(index_expr: &str) -> bool {
 fn evaluate_array_index(state: &mut InterpreterState, index_expr: &str) -> Option<i64> {
     use crate::interpreter::arithmetic::evaluate_arithmetic;
     use crate::interpreter::types::{ExecutionLimits, InterpreterContext};
-    use crate::parser::parse_arith_expr;
 
     // If the index is a quoted string, it's meant for associative arrays only
     if is_quoted_string_index(index_expr) {
         return None;
     }
 
-    // Try to parse and evaluate as arithmetic expression
+    // Try to parse and evaluate as arithmetic expression using brush-parser
     let limits = ExecutionLimits::default();
     let mut ctx = InterpreterContext::new(state, &limits);
 
-    let (arith_expr, _) = parse_arith_expr(index_expr, 0);
-    match evaluate_arithmetic(&mut ctx, &arith_expr, false, None) {
+    match evaluate_arithmetic(&mut ctx, index_expr, false, None) {
         Ok(result) => Some(result),
         Err(_) => {
-            // If parsing fails, try to parse as simple number
+            // If evaluation fails, try to parse as simple number
             match index_expr.parse::<i64>() {
                 Ok(num) => Some(num),
                 Err(_) => Some(0),

@@ -5,7 +5,8 @@
 //! - Subscript assignments: VAR[idx]=value
 //! - Scalar assignments with nameref resolution
 
-use crate::ast::types::{SimpleCommandNode, WordNode};
+use brush_parser::ast as bast;
+
 use crate::interpreter::helpers::nameref::{
     get_nameref_target, is_nameref, resolve_nameref, resolve_nameref_for_assignment,
     NamerefAssignmentResult,
@@ -56,25 +57,49 @@ impl Default for SingleAssignmentResult {
     }
 }
 
+/// Extract assignments from a SimpleCommand's prefix.
+fn get_assignments(cmd: &bast::SimpleCommand) -> Vec<&bast::Assignment> {
+    let mut assignments = Vec::new();
+    if let Some(ref prefix) = cmd.prefix {
+        for item in &prefix.0 {
+            if let bast::CommandPrefixOrSuffixItem::AssignmentWord(assignment, _word) = item {
+                assignments.push(assignment);
+            }
+        }
+    }
+    assignments
+}
+
+/// Helper to get the variable name string from an AssignmentName.
+fn assignment_name_str(name: &bast::AssignmentName) -> String {
+    match name {
+        bast::AssignmentName::VariableName(s) => s.clone(),
+        bast::AssignmentName::ArrayElementName(s, idx) => format!("{}[{}]", s, idx),
+    }
+}
+
 /// Process all assignments in a simple command.
 /// Returns assignment results including temp bindings and any errors.
 pub fn process_assignments(
     state: &mut InterpreterState,
-    node: &SimpleCommandNode,
-    expand_word_fn: impl Fn(&mut InterpreterState, &WordNode) -> String,
+    node: &bast::SimpleCommand,
+    expand_word_fn: impl Fn(&mut InterpreterState, &bast::Word) -> String,
 ) -> AssignmentResult {
     let mut result = AssignmentResult::default();
+    let has_command = node.word_or_name.is_some();
 
-    for assignment in &node.assignments {
-        let name = &assignment.name;
+    let assignments = get_assignments(node);
+
+    for assignment in &assignments {
+        let name_str = assignment_name_str(&assignment.name);
 
         // Handle array assignment: VAR=(a b c) or VAR+=(a b c)
-        if let Some(ref array) = assignment.array {
+        if let bast::AssignmentValue::Array(ref elements) = assignment.value {
             let array_result = process_array_assignment(
                 state,
-                node,
-                name,
-                array,
+                has_command,
+                &name_str,
+                elements,
                 assignment.append,
                 &mut result.temp_assignments,
             );
@@ -88,60 +113,61 @@ pub fn process_assignments(
             }
         }
 
-        let value = if let Some(ref value_word) = assignment.value {
-            expand_word_fn(state, value_word)
-        } else {
-            String::new()
-        };
-
-        // Check for empty subscript assignment: a[]=value is invalid
-        let empty_subscript_re = regex_lite::Regex::new(r"^([a-zA-Z_][a-zA-Z0-9_]*)\[\]$").unwrap();
-        if empty_subscript_re.is_match(name) {
-            result.error = Some(ExecResult::new(
-                String::new(),
-                format!("bash: {}: bad array subscript\n", name),
-                1,
-            ));
-            return result;
-        }
-
-        // Check for array subscript assignment: a[subscript]=value
-        let subscript_re = regex_lite::Regex::new(r"^([a-zA-Z_][a-zA-Z0-9_]*)\[(.+)\]$").unwrap();
-        if let Some(captures) = subscript_re.captures(name) {
-            let array_name = captures.get(1).unwrap().as_str();
-            let subscript_expr = captures.get(2).unwrap().as_str();
-            let subscript_result = process_subscript_assignment(
-                state,
-                node,
-                array_name,
-                subscript_expr,
-                &value,
-                assignment.append,
-                &mut result.temp_assignments,
-            );
-            if let Some(error) = subscript_result.error {
-                result.error = Some(error);
-                return result;
-            }
-            if subscript_result.continue_to_next {
+        let value = match &assignment.value {
+            bast::AssignmentValue::Scalar(ref word) => expand_word_fn(state, word),
+            bast::AssignmentValue::Array(_) => {
+                // Array already handled above
                 continue;
             }
-        }
+        };
 
-        // Handle scalar assignment
-        let scalar_result = process_scalar_assignment(
-            state,
-            node,
-            name,
-            &value,
-            assignment.append,
-            &mut result.temp_assignments,
-        );
-        if let Some(error) = scalar_result.error {
-            result.error = Some(error);
-            return result;
+        // Handle based on assignment name variant
+        match &assignment.name {
+            bast::AssignmentName::ArrayElementName(array_name, subscript_expr) => {
+                // Check for empty subscript: a[]=value is invalid
+                if subscript_expr.is_empty() {
+                    result.error = Some(ExecResult::new(
+                        String::new(),
+                        format!("bash: {}: bad array subscript\n", name_str),
+                        1,
+                    ));
+                    return result;
+                }
+
+                let subscript_result = process_subscript_assignment(
+                    state,
+                    has_command,
+                    array_name,
+                    subscript_expr,
+                    &value,
+                    assignment.append,
+                    &mut result.temp_assignments,
+                );
+                if let Some(error) = subscript_result.error {
+                    result.error = Some(error);
+                    return result;
+                }
+                if subscript_result.continue_to_next {
+                    continue;
+                }
+            }
+            bast::AssignmentName::VariableName(name) => {
+                // Handle scalar assignment
+                let scalar_result = process_scalar_assignment(
+                    state,
+                    has_command,
+                    name,
+                    &value,
+                    assignment.append,
+                    &mut result.temp_assignments,
+                );
+                if let Some(error) = scalar_result.error {
+                    result.error = Some(error);
+                    return result;
+                }
+                result.xtrace_output.push_str(&scalar_result.xtrace_output);
+            }
         }
-        result.xtrace_output.push_str(&scalar_result.xtrace_output);
     }
 
     result
@@ -150,9 +176,9 @@ pub fn process_assignments(
 /// Process an array assignment: VAR=(a b c) or VAR+=(a b c)
 fn process_array_assignment(
     state: &mut InterpreterState,
-    node: &SimpleCommandNode,
+    has_command: bool,
     name: &str,
-    array: &[WordNode],
+    array: &[(Option<bast::Word>, bast::Word)],
     append: bool,
     temp_assignments: &mut HashMap<String, Option<String>>,
 ) -> SingleAssignmentResult {
@@ -190,7 +216,7 @@ fn process_array_assignment(
 
     // Check if array variable is readonly
     if is_readonly(state, name) {
-        if node.name.is_some() {
+        if has_command {
             result
                 .xtrace_output
                 .push_str(&format!("bash: {}: readonly variable\n", name));
@@ -225,7 +251,7 @@ fn process_array_assignment(
     }
 
     // For prefix assignments with a command, bash stringifies the array syntax
-    if node.name.is_some() {
+    if has_command {
         temp_assignments.insert(name.to_string(), state.env.get(name).cloned());
         // Would stringify array here
     }
@@ -269,7 +295,7 @@ fn get_array_max_index(state: &InterpreterState, name: &str) -> Option<usize> {
 /// Process a subscript assignment: VAR[idx]=value
 fn process_subscript_assignment(
     state: &mut InterpreterState,
-    node: &SimpleCommandNode,
+    has_command: bool,
     array_name: &str,
     subscript_expr: &str,
     value: &str,
@@ -298,7 +324,7 @@ fn process_subscript_assignment(
 
     // Check if array variable is readonly
     if is_readonly(state, &resolved_array_name) {
-        if node.name.is_some() {
+        if has_command {
             result.continue_to_next = true;
             return result;
         }
@@ -321,7 +347,7 @@ fn process_subscript_assignment(
         value.to_string()
     };
 
-    if node.name.is_some() {
+    if has_command {
         temp_assignments.insert(env_key.clone(), state.env.get(&env_key).cloned());
         state.env.insert(env_key, final_value);
     } else {
@@ -353,7 +379,7 @@ fn compute_array_index(state: &InterpreterState, subscript_expr: &str) -> i64 {
 /// Process a scalar assignment
 fn process_scalar_assignment(
     state: &mut InterpreterState,
-    node: &SimpleCommandNode,
+    has_command: bool,
     name: &str,
     value: &str,
     append: bool,
@@ -387,7 +413,7 @@ fn process_scalar_assignment(
 
     // Check if variable is readonly
     if is_readonly(state, &target_name) {
-        if node.name.is_some() {
+        if has_command {
             result
                 .xtrace_output
                 .push_str(&format!("bash: {}: readonly variable\n", target_name));
@@ -417,7 +443,7 @@ fn process_scalar_assignment(
         target_name.clone()
     };
 
-    if node.name.is_some() {
+    if has_command {
         temp_assignments.insert(
             actual_env_key.clone(),
             state.env.get(&actual_env_key).cloned(),

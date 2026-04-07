@@ -4,12 +4,13 @@
 //! - Function definition (adding to function table)
 //! - Function calls (with positional parameters and local scopes)
 
+use brush_parser::ast as bast;
+
 use crate::interpreter::errors::{
     ExecutionLimitError, ExitError, InterpreterError, LimitType, ReturnError,
 };
 use crate::interpreter::helpers::shell_constants::POSIX_SPECIAL_BUILTINS;
-use crate::interpreter::types::{ExecResult, InterpreterState};
-use crate::FunctionDefNode;
+use crate::interpreter::types::{ExecResult, InterpreterState, StoredFunction};
 use std::collections::HashMap;
 
 /// Execute a function definition (add to function table).
@@ -17,30 +18,34 @@ use std::collections::HashMap;
 /// name conflicts with a POSIX special builtin in POSIX mode.
 pub fn execute_function_def(
     state: &mut InterpreterState,
-    node: &FunctionDefNode,
+    node: &bast::FunctionDefinition,
     current_source: Option<&str>,
 ) -> Result<ExecResult, ExitError> {
+    let name = &node.fname.value;
+
     // In POSIX mode, special built-ins cannot be redefined as functions
     // This is a fatal error that exits the script
-    if state.options.posix && POSIX_SPECIAL_BUILTINS.contains(node.name.as_str()) {
+    if state.options.posix && POSIX_SPECIAL_BUILTINS.contains(name.as_str()) {
         let stderr = format!(
             "bash: line {}: `{}': is a special builtin\n",
-            state.current_line, node.name
+            state.current_line, name
         );
         return Err(ExitError::new(2, String::new(), stderr));
     }
 
-    // Store the source file where this function is defined (for BASH_SOURCE)
-    let mut func_with_source = node.clone();
-    if func_with_source.source_file.is_none() {
-        func_with_source.source_file = current_source.map(|s| s.to_string());
-    }
-    if func_with_source.source_file.is_none() {
-        func_with_source.source_file = Some("main".to_string());
-    }
+    // Determine source file: use provided current_source, fall back to "main"
+    let source_file = current_source
+        .map(|s| s.to_string())
+        .or_else(|| Some("main".to_string()));
 
     // Add to function table
-    state.functions.insert(node.name.clone(), func_with_source);
+    state.functions.insert(
+        name.clone(),
+        StoredFunction {
+            def: node.clone(),
+            source_file,
+        },
+    );
 
     Ok(ExecResult::ok())
 }
@@ -50,8 +55,8 @@ pub fn is_function_defined(state: &InterpreterState, name: &str) -> bool {
     state.functions.contains_key(name)
 }
 
-/// Get a function definition by name
-pub fn get_function<'a>(state: &'a InterpreterState, name: &str) -> Option<&'a FunctionDefNode> {
+/// Get a stored function by name
+pub fn get_function<'a>(state: &'a InterpreterState, name: &str) -> Option<&'a StoredFunction> {
     state.functions.get(name)
 }
 
@@ -78,11 +83,13 @@ pub struct FunctionCallContext {
 /// This pushes a new local scope and sets up positional parameters.
 pub fn setup_function_call(
     state: &mut InterpreterState,
-    func: &FunctionDefNode,
+    func: &StoredFunction,
     args: &[String],
     call_line: Option<u32>,
     max_call_depth: u32,
 ) -> Result<FunctionCallContext, InterpreterError> {
+    let func_name = &func.def.fname.value;
+
     // Increment call depth
     state.call_depth += 1;
 
@@ -93,7 +100,7 @@ pub fn setup_function_call(
             ExecutionLimitError::simple(
                 format!(
                     "{}: maximum recursion depth ({}) exceeded",
-                    func.name, max_call_depth
+                    func_name, max_call_depth
                 ),
                 LimitType::Recursion,
             ),
@@ -116,7 +123,7 @@ pub fn setup_function_call(
         .func_name_stack
         .as_mut()
         .unwrap()
-        .insert(0, func.name.clone());
+        .insert(0, func_name.clone());
     state
         .call_line_stack
         .as_mut()
@@ -276,7 +283,7 @@ pub fn handle_return_error(error: ReturnError) -> ExecResult {
 /// allowing the caller to provide the actual command execution logic.
 pub fn call_function<F>(
     state: &mut InterpreterState,
-    func: &FunctionDefNode,
+    func: &StoredFunction,
     args: &[String],
     stdin: &str,
     call_line: Option<u32>,
@@ -312,20 +319,44 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CompoundCommandNode, GroupNode};
 
     fn make_state() -> InterpreterState {
         InterpreterState::default()
     }
 
-    fn make_function(name: &str) -> FunctionDefNode {
-        FunctionDefNode {
-            name: name.to_string(),
-            body: Box::new(CompoundCommandNode::Group(GroupNode {
-                body: vec![],
-                redirections: vec![],
-            })),
-            redirections: vec![],
+    /// Helper to create a minimal `bast::FunctionDefinition` for testing.
+    fn make_func_def(name: &str) -> bast::FunctionDefinition {
+        bast::FunctionDefinition {
+            fname: bast::Word {
+                value: name.to_string(),
+                loc: None,
+            },
+            body: bast::FunctionBody(
+                bast::CompoundCommand::BraceGroup(bast::BraceGroupCommand {
+                    list: bast::CompoundList(vec![]),
+                    loc: brush_parser::TokenLocation {
+                        start: std::sync::Arc::new(brush_parser::SourcePosition {
+                            index: 0,
+                            line: 0,
+                            column: 0,
+                        }),
+                        end: std::sync::Arc::new(brush_parser::SourcePosition {
+                            index: 0,
+                            line: 0,
+                            column: 0,
+                        }),
+                    },
+                }),
+                None,
+            ),
+            source: String::new(),
+        }
+    }
+
+    /// Helper to create a `StoredFunction` for testing.
+    fn make_function(name: &str) -> StoredFunction {
+        StoredFunction {
+            def: make_func_def(name),
             source_file: None,
         }
     }
@@ -333,9 +364,9 @@ mod tests {
     #[test]
     fn test_execute_function_def() {
         let mut state = make_state();
-        let func = make_function("myfunc");
+        let func_def = make_func_def("myfunc");
 
-        let result = execute_function_def(&mut state, &func, None);
+        let result = execute_function_def(&mut state, &func_def, None);
         assert!(result.is_ok());
         assert!(is_function_defined(&state, "myfunc"));
     }
@@ -344,9 +375,9 @@ mod tests {
     fn test_execute_function_def_posix_special_builtin() {
         let mut state = make_state();
         state.options.posix = true;
-        let func = make_function("break"); // break is a POSIX special builtin
+        let func_def = make_func_def("break"); // break is a POSIX special builtin
 
-        let result = execute_function_def(&mut state, &func, None);
+        let result = execute_function_def(&mut state, &func_def, None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.exit_code, 2);
@@ -356,12 +387,12 @@ mod tests {
     #[test]
     fn test_get_function() {
         let mut state = make_state();
-        let func = make_function("myfunc");
-        execute_function_def(&mut state, &func, None).unwrap();
+        let func_def = make_func_def("myfunc");
+        execute_function_def(&mut state, &func_def, None).unwrap();
 
         let retrieved = get_function(&state, "myfunc");
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().name, "myfunc");
+        assert_eq!(retrieved.unwrap().def.fname.value, "myfunc");
 
         assert!(get_function(&state, "nonexistent").is_none());
     }
@@ -369,8 +400,8 @@ mod tests {
     #[test]
     fn test_unset_function() {
         let mut state = make_state();
-        let func = make_function("myfunc");
-        execute_function_def(&mut state, &func, None).unwrap();
+        let func_def = make_func_def("myfunc");
+        execute_function_def(&mut state, &func_def, None).unwrap();
 
         assert!(is_function_defined(&state, "myfunc"));
         assert!(unset_function(&mut state, "myfunc"));
@@ -381,8 +412,8 @@ mod tests {
     #[test]
     fn test_get_function_names() {
         let mut state = make_state();
-        execute_function_def(&mut state, &make_function("func1"), None).unwrap();
-        execute_function_def(&mut state, &make_function("func2"), None).unwrap();
+        execute_function_def(&mut state, &make_func_def("func1"), None).unwrap();
+        execute_function_def(&mut state, &make_func_def("func2"), None).unwrap();
 
         let names = get_function_names(&state);
         assert_eq!(names.len(), 2);
