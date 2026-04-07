@@ -192,7 +192,7 @@ enum Command {
     /// Manage Hide My Email aliases (iCloud+ required).
     #[command(subcommand)]
     Hme(HmeCmd),
-    /// Run bash (just-bash) against the iCloud virtual filesystem.
+    /// Run bash (bashbox) against the iCloud virtual filesystem.
     Bash {
         #[command(flatten)]
         sess: SessionArg,

@@ -152,6 +152,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "bashbox"
+version = "0.1.0"
+source = "git+https://github.com/OlegHQ/bashbox?rev=204b7d7223ddb4736e2930221844d6738cf42d9e#204b7d7223ddb4736e2930221844d6738cf42d9e"
+dependencies = [
+ "async-trait",
+ "awk-rs",
+ "base64",
+ "brush-parser",
+ "chrono",
+ "csv",
+ "digest",
+ "flate2",
+ "glob",
+ "hex",
+ "htmd",
+ "http",
+ "jaq-all",
+ "libc",
+ "md-5",
+ "rand 0.8.5",
+ "regex-lite",
+ "sed-rs",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "similar",
+ "sprintf",
+ "tar",
+ "thiserror 1.0.69",
+ "tokio",
+ "ureq",
+ "url",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1052,9 +1088,9 @@ name = "icloud-bash"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bashbox",
  "chrono",
  "icloud-api",
- "just-bash",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1066,13 +1102,13 @@ dependencies = [
 name = "icloud-cli"
 version = "0.1.0"
 dependencies = [
+ "bashbox",
  "chrono",
  "clap",
  "directories",
  "icloud-api",
  "icloud-bash",
  "indicatif",
- "just-bash",
  "serde",
  "serde_json",
  "tokio",
@@ -1388,42 +1424,6 @@ dependencies = [
  "futures-util",
  "once_cell",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "just-bash"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "awk-rs",
- "base64",
- "brush-parser",
- "chrono",
- "clap",
- "csv",
- "digest",
- "flate2",
- "glob",
- "hex",
- "htmd",
- "http",
- "jaq-all",
- "libc",
- "md-5",
- "rand 0.8.5",
- "regex-lite",
- "sed-rs",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "similar",
- "sprintf",
- "tar",
- "thiserror 1.0.69",
- "tokio",
- "ureq",
- "url",
 ]
 
 [[package]]

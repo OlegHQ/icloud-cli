@@ -1,4 +1,4 @@
-//! Composite iCloud VFS: `/Notes`, `/Reminders`, `/HideMyEmail` + `just_bash::InMemoryFs` elsewhere.
+//! Composite iCloud VFS: `/Notes`, `/Reminders`, `/HideMyEmail` + `bashbox::InMemoryFs` elsewhere.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -10,9 +10,9 @@ use icloud_api::reminders::models::priority_label;
 use icloud_api::reminders::SyncEngine;
 use icloud_api::title_doc::ts_to_str;
 use icloud_api::{with_notes_retry, with_reminders_retry};
-use just_bash::fs::types::{CpOptions, DirentEntry, FsError, FsStat, MkdirOptions, RmOptions};
-use just_bash::fs::FileSystem;
-use just_bash::InMemoryFs;
+use bashbox::fs::types::{CpOptions, DirentEntry, FsError, FsStat, MkdirOptions, RmOptions};
+use bashbox::fs::FileSystem;
+use bashbox::InMemoryFs;
 use tokio::sync::Mutex;
 
 use crate::frontmatter::{
@@ -217,7 +217,7 @@ impl ICloudFs {
         Ok(render_reminder(&fm, &rd.title))
     }
 
-    /// All iCloud-backed paths for virtual glob matching (see `just_bash::SyncFsAdapter::glob`).
+    /// All iCloud-backed paths for virtual glob matching (see `bashbox::SyncFsAdapter::glob`).
     async fn push_ic_paths(&self, paths: &mut Vec<String>) {
         paths.push("/Notes".into());
         paths.push("/Reminders".into());

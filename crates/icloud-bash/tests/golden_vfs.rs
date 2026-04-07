@@ -1,4 +1,4 @@
-//! Integration tests for shared VFS helpers and `just_bash` wiring.
+//! Integration tests for shared VFS helpers and `bashbox` wiring.
 //! Detailed behavior is covered by unit tests in each module; CloudKit-backed
 //! `ICloudFs` is exercised manually or via `icloud bash` with a real session.
 
@@ -8,8 +8,8 @@ use std::sync::Arc;
 use icloud_bash::frontmatter::{render_note, strip_frontmatter, NoteFrontmatter};
 use icloud_bash::pathmap::{classify, normalize_vpath, VfsTarget};
 use icloud_bash::sanitize::{disambiguate_filename, filename_to_title, title_to_filename_stem};
-use just_bash::bash::BashOptions;
-use just_bash::{Bash, InMemoryFs};
+use bashbox::bash::BashOptions;
+use bashbox::{Bash, InMemoryFs};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn bash_in_memory_runs_simple_command() {

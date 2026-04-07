@@ -1,4 +1,4 @@
-//! `icloud bash` — run just-bash against the iCloud VFS.
+//! `icloud bash` — run bashbox against the iCloud VFS.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -9,8 +9,8 @@ use icloud_api::session::{
     default_notes_db_path, default_reminders_db_path, load_session, SecretsBackend,
 };
 use icloud_bash::ICloudFs;
-use just_bash::bash::BashOptions;
-use just_bash::{Bash, InMemoryFs};
+use bashbox::bash::BashOptions;
+use bashbox::{Bash, InMemoryFs};
 
 use crate::read_body_or_stdin;
 use crate::{OpenNotes, OpenReminders, SessionArg};
