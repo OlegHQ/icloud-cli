@@ -217,8 +217,9 @@ pub fn convert_char_class(content: &str) -> String {
 
 /// Expand POSIX character classes in a regex pattern string using simple
 /// string replacement. Used by awk where patterns come as pre-built strings.
+///
+/// Replaces standalone `[[:name:]]` with `[expansion]` (e.g. `[[:digit:]]` → `[0-9]`).
 pub fn expand_posix_classes_in_pattern(pattern: &str) -> String {
-    // Build replacements from the shared class definitions
     let classes = [
         "space", "blank", "alpha", "digit", "alnum", "upper", "lower",
         "punct", "xdigit", "graph", "print", "cntrl",
@@ -228,6 +229,26 @@ pub fn expand_posix_classes_in_pattern(pattern: &str) -> String {
         let from = format!("[[:{name}:]]");
         let to = format!("[{}]", posix_class_to_regex(name));
         result = result.replace(&from, &to);
+    }
+    result
+}
+
+/// Expand POSIX `[:name:]` references inside a regex string produced by
+/// brush-parser. brush-parser keeps POSIX classes as-is (e.g. `[[:digit:]]`)
+/// but `regex_lite` doesn't support them, so we expand `[:name:]` → the
+/// equivalent character range inline.
+///
+/// Example: `[[:digit:]abc]` → `[0-9abc]`, `[[:alpha:]]` → `[a-zA-Z]`
+pub fn expand_posix_classes_in_regex(regex: &str) -> String {
+    let classes = [
+        "alnum", "alpha", "ascii", "blank", "cntrl", "digit", "graph",
+        "lower", "print", "punct", "space", "upper", "word", "xdigit",
+    ];
+    let mut result = regex.to_string();
+    for name in &classes {
+        let from = format!("[:{name}:]");
+        let to = posix_class_to_regex(name);
+        result = result.replace(&from, to);
     }
     result
 }

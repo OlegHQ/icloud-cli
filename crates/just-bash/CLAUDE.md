@@ -43,7 +43,7 @@ Input → parser::parse() → AST → ExecutionEngine::execute_script() → Resu
   - `redirections.rs` — I/O redirection handling
   - `expansion/` — 26 modules for different expansion types (brace, tilde, parameter ops, pattern removal, command substitution, etc.)
   - `helpers/` — 25 modules for condition evaluation, file tests, string comparison, etc.
-- **`commands/`** — 39 Unix command implementations, each implementing the async `Command` trait. Complex commands have their own subdirectories: `awk/` (14 files), `sed/` (8 files), `curl/` (7 files), plus `jq/` and `yq/` powered by a shared `jaq_support` helper
+- **`commands/`** — 39 Unix command implementations, each implementing the async `Command` trait. Complex commands have their own subdirectories: `sed/` (thin wrapper around `sed-rs` crate), `curl/` (7 files), plus `jq/` and `yq/` powered by a shared `jaq_support` helper. `awk/` is a thin wrapper around the `awk-rs` crate
 - **`fs/`** — Virtual in-memory filesystem (`InMemoryFs`). No real filesystem access. Supports directories, files, symlinks, permissions, and standard /dev, /proc entries
 - **`sandbox/`** — Vercel-compatible Sandbox API with execution limits (recursion depth, command count, loop iterations)
 - **`network/`** — URL allow-list enforcement, HTTP method restrictions, redirect validation
@@ -57,6 +57,10 @@ Input → parser::parse() → AST → ExecutionEngine::execute_script() → Resu
 - **Network allow-list**: All HTTP requests must pass URL allow-list validation
 - **`InterpreterState`**: Central state object tracking variables, functions, shell options, and execution context — threaded through the interpreter
 - **Standalone boundary**: Keep `just-bash` generic and releasable on its own. Do not couple it to `icloud-*` crates or iCloud-specific behavior.
+
+### Known Issues
+
+See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for crate-level limitations (e.g. awk ORS, ENVIRON sandbox gap). Each issue has a corresponding `#[ignore]` test that will pass once the upstream crate fixes it.
 
 ### Adding a New Command
 

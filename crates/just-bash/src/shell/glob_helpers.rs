@@ -12,8 +12,7 @@
 //! - `glob_to_regex` — Convert glob pattern to regex for filename matching
 
 use super::pattern_utils::{
-    convert_char_class, find_bracket_end, find_matching_paren, is_regex_special,
-    split_extglob_alternatives,
+    convert_char_class, expand_posix_classes_in_regex, find_bracket_end, is_regex_special,
 };
 
 /// Split the GLOBIGNORE environment variable value on colons, preserving
@@ -129,6 +128,9 @@ pub fn globignore_pattern_to_regex(pattern: &str) -> String {
 
 /// Convert a glob pattern to a regex string for filename matching.
 ///
+/// Uses `brush_parser::pattern::pattern_to_regex_str()` for the core conversion,
+/// then expands POSIX character classes for `regex_lite` compatibility.
+///
 /// Unlike `globignore_pattern_to_regex`, here `*` matches anything (including `/`)
 /// because this is used for matching individual filenames against patterns
 /// (used by GlobExpander.matchPattern).
@@ -142,82 +144,19 @@ pub fn globignore_pattern_to_regex(pattern: &str) -> String {
 ///
 /// The result is anchored with `^...$`.
 pub fn glob_to_regex(pattern: &str, extglob: bool) -> String {
-    let inner = glob_to_regex_inner(pattern, extglob);
-    format!("^{}$", inner)
-}
-
-/// Inner (unanchored) glob-to-regex conversion, used recursively for extglob alternatives.
-fn glob_to_regex_inner(pattern: &str, extglob: bool) -> String {
-    let mut regex = String::new();
-    let chars: Vec<char> = pattern.chars().collect();
-    let mut i = 0;
-
-    while i < chars.len() {
-        let c = chars[i];
-
-        // Check for extglob patterns: @(...), *(...), +(...), ?(...), !(...)
-        if extglob
-            && (c == '@' || c == '*' || c == '+' || c == '?' || c == '!')
-            && i + 1 < chars.len()
-            && chars[i + 1] == '('
-        {
-            let close_idx = find_matching_paren(&chars, i + 1);
-            if close_idx != usize::MAX {
-                let content: String = chars[i + 2..close_idx].iter().collect();
-                let alternatives = split_extglob_alternatives(&content);
-                let alt_regexes: Vec<String> = alternatives
-                    .iter()
-                    .map(|alt| glob_to_regex_inner(alt, extglob))
-                    .collect();
-                let alt_group = alt_regexes.join("|");
-
-                match c {
-                    '@' => regex.push_str(&format!("(?:{})", alt_group)),
-                    '*' => regex.push_str(&format!("(?:{})*", alt_group)),
-                    '+' => regex.push_str(&format!("(?:{})+", alt_group)),
-                    '?' => regex.push_str(&format!("(?:{})?", alt_group)),
-                    '!' => regex.push_str(&format!("(?!(?:{})$).*", alt_group)),
-                    _ => {}
-                }
-                i = close_idx + 1;
-                continue;
-            }
+    match brush_parser::pattern::pattern_to_regex_str(pattern, extglob) {
+        Ok(inner) => {
+            let expanded = expand_posix_classes_in_regex(&inner);
+            format!("^{}$", expanded)
         }
-
-        if c == '\\' && i + 1 < chars.len() {
-            let next = chars[i + 1];
-            if is_regex_special(next) {
-                regex.push('\\');
-            }
-            regex.push(next);
-            i += 2;
-        } else if c == '*' {
-            regex.push_str(".*");
-            i += 1;
-        } else if c == '?' {
-            regex.push('.');
-            i += 1;
-        } else if c == '[' {
-            let class_end = find_bracket_end(&chars, i);
-            if class_end == usize::MAX {
-                regex.push_str("\\[");
-                i += 1;
-            } else {
-                let class_content: String = chars[i + 1..class_end].iter().collect();
-                regex.push_str(&convert_char_class(&class_content));
-                i = class_end + 1;
-            }
-        } else if is_regex_special(c) {
-            regex.push('\\');
-            regex.push(c);
-            i += 1;
-        } else {
-            regex.push(c);
-            i += 1;
+        Err(_) => {
+            // Fallback: treat the whole pattern as a literal
+            let escaped: String = pattern.chars().map(|c| {
+                if is_regex_special(c) { format!("\\{}", c) } else { c.to_string() }
+            }).collect();
+            format!("^{}$", escaped)
         }
     }
-
-    regex
 }
 
 // ---------------------------------------------------------------------------

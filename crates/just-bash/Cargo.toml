@@ -47,6 +47,8 @@ url = "2"
 http = "1"
 brush-parser = "0.3"
 sprintf = "0.4"
+awk-rs = "0.1"
+sed-rs = "1.0.0"
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["rt-multi-thread", "macros"] }

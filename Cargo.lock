@@ -136,6 +136,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "awk-rs"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed6041a9be45690d0003e8d2ea488cb0a578104e591944398d96d9b7d9a0fbf9"
+dependencies = [
+ "regex",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -323,6 +333,7 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+ "terminal_size",
 ]
 
 [[package]]
@@ -1384,6 +1395,7 @@ name = "just-bash"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "awk-rs",
  "base64",
  "brush-parser",
  "chrono",
@@ -1400,6 +1412,7 @@ dependencies = [
  "md-5",
  "rand 0.8.5",
  "regex-lite",
+ "sed-rs",
  "serde",
  "serde_json",
  "sha1",
@@ -2039,6 +2052,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex"
+version = "1.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "regex-automata"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2257,6 +2282,18 @@ checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "sed-rs"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79fb4d97e5bb7becd235c6a6bf1fd8f6c426417a4a698bc9dab7c0e3edbb691d"
+dependencies = [
+ "clap",
+ "regex",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2541,6 +2578,16 @@ checksum = "c4790fc369d5a530f4b544b094e31388b9b3a37c0f4652ade4505945f5660d24"
 dependencies = [
  "new_debug_unreachable",
  "utf-8",
+]
+
+[[package]]
+name = "terminal_size"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
+dependencies = [
+ "rustix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
