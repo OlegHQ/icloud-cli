@@ -74,20 +74,28 @@ pub async fn run_bash(
     .await;
 
     let script_text = if let Some(c) = command {
-        c
+        Some(c)
     } else if let Some(p) = script {
         if p.as_os_str() == "-" {
-            read_body_or_stdin(None)?
+            Some(read_body_or_stdin(None)?)
         } else {
-            std::fs::read_to_string(&p).map_err(icloud_api::Error::Io)?
+            Some(std::fs::read_to_string(&p).map_err(icloud_api::Error::Io)?)
         }
+    } else if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        None // interactive mode
     } else {
-        read_body_or_stdin(None)?
+        Some(read_body_or_stdin(None)?)
     };
 
-    let res = bash.exec(&script_text, None).await;
-    print!("{}", res.stdout);
-    eprint!("{}", res.stderr);
+    let exit_code = if let Some(script_text) = script_text {
+        let res = bash.exec(&script_text, None).await;
+        print!("{}", res.stdout);
+        eprint!("{}", res.stderr);
+        res.exit_code
+    } else {
+        run_repl(&mut bash).await;
+        0
+    };
 
     {
         let mut n = ne.lock().await;
@@ -98,9 +106,103 @@ pub async fn run_bash(
         rs.save_cache(&mut r.cache)?;
     }
 
-    if res.exit_code != 0 {
-        std::process::exit(res.exit_code);
+    if exit_code != 0 {
+        std::process::exit(exit_code);
     }
 
     Ok(())
+}
+
+async fn run_repl(bash: &mut Bash) {
+    use rustyline::error::ReadlineError;
+    use rustyline::DefaultEditor;
+
+    let mut rl = match DefaultEditor::new() {
+        Ok(rl) => rl,
+        Err(e) => {
+            eprintln!("readline init error: {e}");
+            return;
+        }
+    };
+
+    let history_path =
+        std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".icloud_bash_history"));
+    if let Some(ref p) = history_path {
+        let _ = rl.load_history(p);
+    }
+
+    let mut buf = String::new();
+    loop {
+        let prompt = if buf.is_empty() {
+            format!("icloud:{}$ ", bash.get_cwd())
+        } else {
+            "> ".to_string()
+        };
+        match rl.readline(&prompt) {
+            Ok(line) => {
+                buf.push_str(&line);
+                buf.push('\n');
+
+                if is_incomplete(&buf) {
+                    continue;
+                }
+
+                let input = std::mem::take(&mut buf);
+                let trimmed = input.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                let _ = rl.add_history_entry(trimmed);
+                let res = bash.exec(trimmed, None).await;
+                if !res.stdout.is_empty() {
+                    print!("{}", res.stdout);
+                }
+                if !res.stderr.is_empty() {
+                    eprint!("{}", res.stderr);
+                }
+            }
+            Err(ReadlineError::Interrupted) => {
+                buf.clear();
+                println!("^C");
+            }
+            Err(ReadlineError::Eof) => break,
+            Err(e) => {
+                eprintln!("readline error: {e}");
+                break;
+            }
+        }
+    }
+
+    if let Some(ref p) = history_path {
+        let _ = rl.save_history(p);
+    }
+}
+
+fn is_incomplete(input: &str) -> bool {
+    let trimmed = input.trim_end();
+    if trimmed.ends_with('\\') {
+        return true;
+    }
+    // Check unmatched quotes
+    let mut single = false;
+    let mut double = false;
+    let mut escaped = false;
+    for ch in trimmed.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '\'' && !double {
+            single = !single;
+        }
+        if ch == '"' && !single {
+            double = !double;
+        }
+    }
+    single || double
 }

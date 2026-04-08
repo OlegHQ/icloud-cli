@@ -112,20 +112,24 @@ impl NotesSyncEngine {
         }
         let doc = proto::decode_note_body(&b64)?;
 
-        // Collect attachment IDs that are tables
-        let table_ids: Vec<&str> = doc
-            .runs
-            .iter()
-            .filter_map(|r| r.attachment.as_ref())
-            .filter(|a| a.type_uti.as_deref() == Some("com.apple.notes.table"))
-            .map(|a| a.identifier.as_str())
-            .collect();
+        // Partition attachment IDs into tables vs non-tables in a single pass
+        let mut table_ids = Vec::new();
+        let mut non_table_ids = Vec::new();
+        for run in &doc.runs {
+            if let Some(ref att) = run.attachment {
+                if att.type_uti.as_deref() == Some("com.apple.notes.table") {
+                    table_ids.push(att.identifier.as_str());
+                } else {
+                    non_table_ids.push(att.identifier.as_str());
+                }
+            }
+        }
 
         let mut attachments = std::collections::HashMap::new();
+        let owner = self.owner_id().await?;
 
-        // Fetch table data for each table attachment
+        // Fetch table data
         if !table_ids.is_empty() {
-            let owner = self.owner_id().await?;
             let result = self
                 .ck
                 .lookup_records(&owner, &table_ids, &["MergeableDataEncrypted"])
@@ -148,6 +152,33 @@ impl NotesSyncEngine {
             }
         }
 
+        let mut att_titles = std::collections::HashMap::new();
+        if !non_table_ids.is_empty() {
+            if let Ok(result) = self
+                .ck
+                .lookup_records(&owner, &non_table_ids, &["TitleEncrypted"])
+                .await
+            {
+                if let Some(recs) = result["records"].as_array() {
+                    for rec in recs {
+                        let rn = rec["recordName"].as_str().unwrap_or("");
+                        if rec["serverErrorCode"].as_str().is_some() {
+                            continue;
+                        }
+                        let title_b64 = rec["fields"]["TitleEncrypted"]["value"]
+                            .as_str()
+                            .unwrap_or("");
+                        if !title_b64.is_empty() {
+                            let title = proto::decode_b64_text(title_b64);
+                            if !title.is_empty() {
+                                att_titles.insert(rn.to_string(), title);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Collect image/file attachment info
         for run in &doc.runs {
             if let Some(ref att) = run.attachment {
@@ -155,15 +186,16 @@ impl NotesSyncEngine {
                     continue; // already resolved (table)
                 }
                 let uti = att.type_uti.as_deref().unwrap_or("unknown");
+                let title = att_titles.get(&att.identifier).cloned();
                 if markdown::is_image_uti(uti) {
                     attachments.insert(
                         att.identifier.clone(),
-                        AttachmentContent::Image(uti.to_string()),
+                        AttachmentContent::Image(uti.to_string(), title),
                     );
                 } else if uti != "com.apple.notes.table" {
                     attachments.insert(
                         att.identifier.clone(),
-                        AttachmentContent::File(uti.to_string()),
+                        AttachmentContent::File(uti.to_string(), title),
                     );
                 }
             }

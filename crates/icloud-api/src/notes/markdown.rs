@@ -83,6 +83,13 @@ fn extension_to_uti(ext: &str) -> String {
     }
 }
 
+/// Derive the file extension from an original filename, falling back to UTI.
+fn attachment_extension<'a>(title: Option<&'a str>, uti: &'a str) -> &'a str {
+    title
+        .and_then(|t| t.rfind('.').map(|i| &t[i..]))
+        .unwrap_or_else(|| uti_to_extension(uti))
+}
+
 /// Returns true if a UTI represents an image type.
 pub(crate) fn is_image_uti(uti: &str) -> bool {
     uti.starts_with("public.png")
@@ -148,10 +155,10 @@ fn normalize_runs(doc: &NoteDocument) -> NoteDocument {
 pub enum AttachmentContent {
     /// Table with decoded cell data.
     Table(TableData),
-    /// Image attachment (UTI, e.g. "public.png").
-    Image(String),
-    /// File/audio attachment (UTI, e.g. "com.apple.m4a-audio").
-    File(String),
+    /// Image attachment: (UTI, optional original filename).
+    Image(String, Option<String>),
+    /// File/audio attachment: (UTI, optional original filename).
+    File(String, Option<String>),
 }
 
 /// Convert a NoteDocument to Markdown.
@@ -422,13 +429,15 @@ fn emit_inline(
                     AttachmentContent::Table(table) => {
                         emit_table(out, table);
                     }
-                    AttachmentContent::Image(uti) => {
-                        let ext = uti_to_extension(uti);
-                        out.push_str(&format!("![image](/Attachments/{}{})", att.identifier, ext));
+                    AttachmentContent::Image(uti, title) => {
+                        let ext = attachment_extension(title.as_deref(), uti);
+                        let alt = title.as_deref().unwrap_or("image");
+                        out.push_str(&format!("![{}](/Attachments/{}{})", alt, att.identifier, ext));
                     }
-                    AttachmentContent::File(uti) => {
-                        let ext = uti_to_extension(uti);
-                        out.push_str(&format!("[file](/Attachments/{}{})", att.identifier, ext));
+                    AttachmentContent::File(uti, title) => {
+                        let ext = attachment_extension(title.as_deref(), uti);
+                        let text = title.as_deref().unwrap_or("file");
+                        out.push_str(&format!("[{}](/Attachments/{}{})", text, att.identifier, ext));
                     }
                 }
             } else {

@@ -67,76 +67,82 @@ pub fn decode_table(b64: &str) -> Result<TableData> {
     decode_mergeable_data(&decompressed)
 }
 
-/// Recursively collect all field 10 (cell content) and field 16 (column container)
-/// entries from nested field 3 (operation) structures.
-fn collect_table_fields(
-    buf: &[u8],
-    cell_texts: &mut Vec<String>,
-    num_cols: &mut usize,
-    rows_per_col: &mut Vec<usize>,
-    depth: usize,
-) {
+/// Accumulated state from recursive protobuf traversal.
+struct TableFields {
+    cell_texts: Vec<String>,
+    num_cols: usize,
+    rows_per_col: Vec<usize>,
+    /// CRDT list entry counts (rows list first, then columns list).
+    crdt_lists: Vec<usize>,
+}
+
+/// Recursively collect all field 10 (cell content), field 16 (column container),
+/// and field 6 (CRDT list) entries from nested field 3 (operation) structures.
+fn collect_table_fields(buf: &[u8], state: &mut TableFields, depth: usize) {
     if depth > 10 {
         return;
     }
 
     // field 16 = cell column container
     for col_container in proto_get_all_bytes(buf, 16) {
-        *num_cols += 1;
-        // Count row entries within the column container
+        state.num_cols += 1;
         if let Some(row_structure) = proto_get_bytes(col_container, 2) {
-            let row_entries = proto_get_all_bytes(row_structure, 1);
-            rows_per_col.push(row_entries.len());
+            state.rows_per_col.push(proto_get_all_bytes(row_structure, 1).len());
+        }
+    }
+
+    // field 6 = CRDT list — only appears at top-level operations
+    if depth == 0 {
+        for list in proto_get_all_bytes(buf, 6) {
+            state.crdt_lists.push(proto_get_all_bytes(list, 1).len());
         }
     }
 
     // field 10 = cell content (NoteDocument-like)
     for cell_doc in proto_get_all_bytes(buf, 10) {
-        // field 2 = cell text
-        let text = proto_get_string(cell_doc, 2).unwrap_or_default();
-        cell_texts.push(text);
+        state.cell_texts.push(proto_get_string(cell_doc, 2).unwrap_or_default());
     }
 
     // Recurse into field 3 (nested operations)
     for nested_op in proto_get_all_bytes(buf, 3) {
-        collect_table_fields(nested_op, cell_texts, num_cols, rows_per_col, depth + 1);
+        collect_table_fields(nested_op, state, depth + 1);
     }
 }
 
 /// Decode raw MergeableData protobuf bytes.
 fn decode_mergeable_data(buf: &[u8]) -> Result<TableData> {
-    // MergeableData.content (field 2)
     let content = proto_get_bytes(buf, 2)
         .ok_or_else(|| Error::Notes("missing MergeableData.content".into()))?;
 
-    // Recursively search for cell content and column containers
-    let mut cell_texts: Vec<String> = Vec::new();
-    let mut num_cols = 0usize;
-    let mut rows_per_col: Vec<usize> = Vec::new();
+    let mut state = TableFields {
+        cell_texts: Vec::new(),
+        num_cols: 0,
+        rows_per_col: Vec::new(),
+        crdt_lists: Vec::new(),
+    };
 
-    // Start from the top-level operations (field 3 in content)
     for op in proto_get_all_bytes(content, 3) {
-        collect_table_fields(op, &mut cell_texts, &mut num_cols, &mut rows_per_col, 0);
+        collect_table_fields(op, &mut state, 0);
     }
 
-    // Determine grid shape
-    let num_rows = rows_per_col.first().copied().unwrap_or(1).max(1);
-    let num_cols = num_cols.max(1);
+    // The encoder emits two CRDT lists (field 6): first = rows, second = columns.
+    // Use the column CRDT list as the authoritative count since field 16 containers
+    // may be absent for entirely empty columns.
+    let crdt_col_count = state.crdt_lists.get(1).copied().unwrap_or(0);
+    let num_rows = state.rows_per_col.first().copied().unwrap_or(1).max(1);
+    let num_cols = state.num_cols.max(crdt_col_count).max(1);
 
-    // Cell texts appear in column-major order (cells interleaved with column containers).
-    // If we have fewer cells than grid size, pad with empty strings.
+    // Pad cell texts to grid size (column-major order)
     let expected = num_rows * num_cols;
-    while cell_texts.len() < expected {
-        cell_texts.push(String::new());
-    }
+    state.cell_texts.resize(expected, String::new());
 
-    // Build the row-major grid from column-major cell order
+    // Build row-major grid from column-major cell order
     let mut grid = vec![vec![String::new(); num_cols]; num_rows];
     for (row, row_cells) in grid.iter_mut().enumerate() {
         for (col, cell) in row_cells.iter_mut().enumerate() {
             let idx = col * num_rows + row;
-            if idx < cell_texts.len() {
-                *cell = cell_texts[idx].clone();
+            if idx < state.cell_texts.len() {
+                *cell = std::mem::take(&mut state.cell_texts[idx]);
             }
         }
     }
@@ -554,6 +560,26 @@ mod tests {
         assert_eq!(decoded.cells[0][1], "");
         assert_eq!(decoded.cells[1][0], "");
         assert_eq!(decoded.cells[1][1], "D");
+    }
+
+    #[test]
+    fn empty_column_preserved() {
+        let table = TableData {
+            cells: vec![
+                vec!["Table".into(), "dasda".into(), "".into()],
+                vec!["21321".into(), "32123".into(), "".into()],
+            ],
+        };
+        let encoded = encode_table(&table).unwrap();
+        let decoded = decode_table(&encoded).unwrap();
+        assert_eq!(decoded.rows(), 2);
+        assert_eq!(decoded.cols(), 3, "empty third column should be preserved");
+        assert_eq!(decoded.cells[0][0], "Table");
+        assert_eq!(decoded.cells[0][1], "dasda");
+        assert_eq!(decoded.cells[0][2], "");
+        assert_eq!(decoded.cells[1][0], "21321");
+        assert_eq!(decoded.cells[1][1], "32123");
+        assert_eq!(decoded.cells[1][2], "");
     }
 
     #[test]
