@@ -13,6 +13,47 @@ use super::sync::NotesSyncEngine;
 use super::table;
 
 impl NotesSyncEngine {
+    /// Build a closure that maps VFS note paths (e.g. `/Notes/Folder/Title.md`)
+    /// back to `applenotes:note/UUID` URLs for the write path.
+    fn build_reverse_link_resolver(&self) -> impl Fn(&str) -> Option<String> + '_ {
+        // Pre-build lookup maps for O(1) resolution per link.
+        let folder_by_name: std::collections::HashMap<&str, &str> = self
+            .cache
+            .folders
+            .iter()
+            .map(|(id, name)| (name.as_str(), id.as_str()))
+            .collect();
+        let note_by_folder_title: std::collections::HashMap<(&str, &str), &str> = self
+            .cache
+            .notes
+            .iter()
+            .filter(|(_, nd)| !nd.deleted && nd.folder_ref.is_some())
+            .map(|(id, nd)| {
+                (
+                    (nd.folder_ref.as_deref().unwrap(), nd.title.as_str()),
+                    id.as_str(),
+                )
+            })
+            .collect();
+
+        move |url: &str| -> Option<String> {
+            let rest = url.strip_prefix("/Notes/")?;
+            let slash = rest.find('/')?;
+            let folder_name = &rest[..slash];
+            let filename = &rest[slash + 1..];
+            let title_stem = filename.strip_suffix(".md").unwrap_or(filename);
+            let title = title_stem.replace('\u{2215}', "/");
+
+            let folder_id = *folder_by_name.get(folder_name)?;
+            let note_id = *note_by_folder_title.get(&(folder_id, title.as_str()))?;
+            let owner = self.cache.owner_id.as_deref()?;
+            Some(format!(
+                "applenotes:note/{}?ownerIdentifier={}",
+                note_id, owner
+            ))
+        }
+    }
+
     fn resolve_with_tag(&self, partial: &str) -> Result<(String, String)> {
         let full = self
             .cache
@@ -91,7 +132,10 @@ impl NotesSyncEngine {
             .find_folder_by_name(folder_name)
             .ok_or_else(|| Error::Notes(format!("folder '{folder_name}' not found")))?;
 
-        let parsed = markdown::from_markdown(md)?;
+        let parsed = {
+            let resolver = self.build_reverse_link_resolver();
+            markdown::from_markdown_with_context(md, Some(&resolver))?
+        };
         let doc = parsed.doc;
         let title = doc.text.lines().next().unwrap_or("Untitled").to_string();
         let snippet = doc
@@ -169,7 +213,10 @@ impl NotesSyncEngine {
             .ok_or_else(|| Error::Notes("cache miss".into()))?;
         let folder_id = nd.folder_ref.clone().unwrap_or_default();
 
-        let parsed = markdown::from_markdown(md)?;
+        let parsed = {
+            let resolver = self.build_reverse_link_resolver();
+            markdown::from_markdown_with_context(md, Some(&resolver))?
+        };
         let doc = parsed.doc;
         let title = doc.text.lines().next().unwrap_or("Untitled").to_string();
         let snippet = doc

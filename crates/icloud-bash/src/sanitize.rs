@@ -3,25 +3,8 @@
 use std::collections::HashSet;
 
 const DIV_SLASH: char = '\u{2215}'; // ∕
-const MAX_BYTES: usize = 255;
 
-/// Escape `/` and `\0` in a title for use inside a single path segment (filename stem).
-pub fn title_to_filename_stem(title: &str) -> String {
-    let mut s: String = title
-        .chars()
-        .map(|c| match c {
-            '/' => DIV_SLASH,
-            '\0' => ' ',
-            c => c,
-        })
-        .collect();
-    collapse_spaces_trim(&mut s);
-    if s.is_empty() {
-        return "Untitled".to_string();
-    }
-    truncate_chars_bytes(&mut s, MAX_BYTES);
-    s
-}
+pub use icloud_api::notes::markdown::title_to_filename_stem;
 
 /// Build a unique `.md` filename inside a folder, appending ` (2)`, ` (3)`, … on collision.
 ///
@@ -45,38 +28,6 @@ pub fn disambiguate_filename(stem: &str, existing: &HashSet<String>) -> String {
 pub fn filename_to_title(filename: &str) -> String {
     let stem = filename.strip_suffix(".md").unwrap_or(filename);
     stem.replace(DIV_SLASH, "/")
-}
-
-fn collapse_spaces_trim(s: &mut String) {
-    let mut t = String::with_capacity(s.len());
-    let mut prev_space = true;
-    for c in s.chars() {
-        let is_space = c.is_whitespace();
-        if is_space {
-            if !prev_space {
-                t.push(' ');
-            }
-            prev_space = true;
-        } else {
-            t.push(c);
-            prev_space = false;
-        }
-    }
-    if t.ends_with(' ') {
-        t.pop();
-    }
-    *s = t;
-}
-
-fn truncate_chars_bytes(s: &mut String, max_bytes: usize) {
-    if s.len() <= max_bytes {
-        return;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s.truncate(end);
 }
 
 #[cfg(test)]

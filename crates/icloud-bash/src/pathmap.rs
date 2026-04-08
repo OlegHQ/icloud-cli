@@ -24,6 +24,12 @@ pub enum VfsTarget {
     },
     HideMyEmailRoot,
     HideMyEmailAliases,
+    /// `/Attachments` listing
+    AttachmentsRoot,
+    /// `/Attachments/<file>`
+    AttachmentsFile {
+        filename: String,
+    },
     /// Paths delegated to the passthrough (in-memory) layer — not under iCloud prefixes.
     Passthrough,
 }
@@ -119,6 +125,13 @@ pub fn classify(path: &str) -> Result<VfsTarget, ()> {
             2 if parts[1] == "aliases.json" => Ok(VfsTarget::HideMyEmailAliases),
             _ => Err(()),
         },
+        Some("Attachments") => match parts.len() {
+            1 => Ok(VfsTarget::AttachmentsRoot),
+            2 => Ok(VfsTarget::AttachmentsFile {
+                filename: parts[1].to_string(),
+            }),
+            _ => Err(()),
+        },
         _ => Ok(VfsTarget::Passthrough),
     }
 }
@@ -131,6 +144,7 @@ pub fn is_icloud_prefix(path: &str) -> bool {
         || path.starts_with("/Notes")
         || path.starts_with("/Reminders")
         || path.starts_with("/HideMyEmail")
+        || path.starts_with("/Attachments")
 }
 
 #[cfg(test)]

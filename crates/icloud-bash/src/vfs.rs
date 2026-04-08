@@ -219,6 +219,7 @@ impl ICloudFs {
 
     /// All iCloud-backed paths for virtual glob matching (see `bashbox::SyncFsAdapter::glob`).
     async fn push_ic_paths(&self, paths: &mut Vec<String>) {
+        paths.push("/Attachments".into());
         paths.push("/Notes".into());
         paths.push("/Reminders".into());
         paths.push("/HideMyEmail".into());
@@ -278,12 +279,16 @@ impl FileSystem for ICloudFs {
                 list_name,
                 filename,
             } => self.read_reminder_file(&list_name, &filename).await,
+            VfsTarget::AttachmentsFile { .. } => Err(FsError::Other {
+                message: "Attachment binary download not yet implemented".to_string(),
+            }),
             VfsTarget::NotesFolder { .. }
             | VfsTarget::RemindersList { .. }
             | VfsTarget::Root
             | VfsTarget::NotesRoot
             | VfsTarget::RemindersRoot
-            | VfsTarget::HideMyEmailRoot => Err(FsError::IsDirectory {
+            | VfsTarget::HideMyEmailRoot
+            | VfsTarget::AttachmentsRoot => Err(FsError::IsDirectory {
                 path: path.to_string(),
                 operation: "read".to_string(),
             }),
@@ -469,7 +474,10 @@ impl FileSystem for ICloudFs {
                 path: path.to_string(),
                 operation: "write".to_string(),
             }),
-            VfsTarget::HideMyEmailRoot | VfsTarget::HideMyEmailAliases => Err(FsError::ReadOnly {
+            VfsTarget::HideMyEmailRoot
+            | VfsTarget::HideMyEmailAliases
+            | VfsTarget::AttachmentsRoot
+            | VfsTarget::AttachmentsFile { .. } => Err(FsError::ReadOnly {
                 operation: "write".to_string(),
             }),
             _ => Err(FsError::IsDirectory {
@@ -513,6 +521,7 @@ impl FileSystem for ICloudFs {
                 | VfsTarget::RemindersRoot
                 | VfsTarget::RemindersList { .. }
                 | VfsTarget::HideMyEmailRoot
+                | VfsTarget::AttachmentsRoot
         );
         // Return size 0 for all iCloud targets — avoids fetching every note/reminder
         // body over the network just to report content length (catastrophic for 10K+ items).
@@ -592,6 +601,7 @@ impl FileSystem for ICloudFs {
             operation: "scandir".to_string(),
         })? {
             VfsTarget::Root => Ok(vec![
+                dent("Attachments", true),
                 dent("Notes", true),
                 dent("Reminders", true),
                 dent("HideMyEmail", true),
@@ -626,6 +636,7 @@ impl FileSystem for ICloudFs {
                     .collect())
             }
             VfsTarget::HideMyEmailRoot => Ok(vec![dent("aliases.json", false)]),
+            VfsTarget::AttachmentsRoot => Ok(vec![]),
             _ => Err(FsError::NotDirectory {
                 path: path.to_string(),
                 operation: "scandir".to_string(),

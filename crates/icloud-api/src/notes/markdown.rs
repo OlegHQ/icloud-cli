@@ -7,6 +7,91 @@ use crate::error::Result;
 use super::models::*;
 use super::table::TableData;
 
+// ── Title → filename stem ───────────────────────────────
+
+const DIV_SLASH: char = '\u{2215}'; // ∕
+
+/// Escape `/` and `\0` in a title for use inside a single path segment (filename stem).
+pub fn title_to_filename_stem(title: &str) -> String {
+    let mut s: String = title
+        .chars()
+        .map(|c| match c {
+            '/' => DIV_SLASH,
+            '\0' => ' ',
+            c => c,
+        })
+        .collect();
+    // Collapse runs of whitespace and trim
+    let mut t = String::with_capacity(s.len());
+    let mut prev_space = true;
+    for c in s.chars() {
+        let is_space = c.is_whitespace();
+        if is_space {
+            if !prev_space {
+                t.push(' ');
+            }
+            prev_space = true;
+        } else {
+            t.push(c);
+            prev_space = false;
+        }
+    }
+    if t.ends_with(' ') {
+        t.pop();
+    }
+    s = t;
+    if s.is_empty() {
+        return "Untitled".to_string();
+    }
+    // Truncate to 255 bytes
+    if s.len() > 255 {
+        let mut end = 255;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+    s
+}
+
+// ── UTI ↔ Extension mapping ─────────────────────────────
+
+fn uti_to_extension(uti: &str) -> &'static str {
+    match uti {
+        s if s.starts_with("public.png") => ".png",
+        s if s.starts_with("public.jpeg") => ".jpg",
+        s if s.starts_with("public.tiff") => ".tiff",
+        s if s.starts_with("public.heic") => ".heic",
+        s if s.starts_with("public.image") => ".png",
+        s if s.starts_with("com.adobe.pdf") => ".pdf",
+        s if s.starts_with("com.apple.m4a-audio") => ".m4a",
+        s if s.starts_with("public.mp3") => ".mp3",
+        _ => ".bin",
+    }
+}
+
+fn extension_to_uti(ext: &str) -> String {
+    match ext {
+        ".png" => "public.png".into(),
+        ".jpg" | ".jpeg" => "public.jpeg".into(),
+        ".tiff" => "public.tiff".into(),
+        ".heic" => "public.heic".into(),
+        ".pdf" => "com.adobe.pdf".into(),
+        ".m4a" => "com.apple.m4a-audio".into(),
+        ".mp3" => "public.mp3".into(),
+        _ => format!("dyn.{}", ext.trim_start_matches('.')),
+    }
+}
+
+/// Returns true if a UTI represents an image type.
+pub(crate) fn is_image_uti(uti: &str) -> bool {
+    uti.starts_with("public.png")
+        || uti.starts_with("public.jpeg")
+        || uti.starts_with("public.image")
+        || uti.starts_with("public.tiff")
+        || uti.starts_with("public.heic")
+}
+
 // ── NoteDocument → Markdown ───────────────────────────────
 
 /// Returns true if two runs can be merged: same inline formatting AND same paragraph style.
@@ -74,17 +159,19 @@ pub enum AttachmentContent {
 /// `attachments` maps attachment identifier → resolved content.
 /// Pass an empty map if attachment data isn't available.
 pub fn to_markdown(doc: &NoteDocument) -> String {
-    to_markdown_with_attachments(doc, &HashMap::new())
+    to_markdown_with_attachments(doc, &HashMap::new(), None::<&dyn Fn(&str) -> Option<String>>)
 }
 
 /// Convert a NoteDocument to Markdown with resolved attachment content.
 pub fn to_markdown_with_attachments(
     doc: &NoteDocument,
     attachments: &HashMap<String, AttachmentContent>,
+    link_resolver: Option<impl Fn(&str) -> Option<String>>,
 ) -> String {
     if doc.text.is_empty() {
         return String::new();
     }
+    let lr: Option<&dyn Fn(&str) -> Option<String>> = link_resolver.as_ref().map(|f| f as _);
     // Normalize: merge adjacent runs with same inline formatting to avoid mid-word markers.
     let doc = &normalize_runs(doc);
     let mut out = String::with_capacity(doc.text.len() * 2);
@@ -98,6 +185,9 @@ pub fn to_markdown_with_attachments(
     let mut char_count = 0usize; // chars consumed in current run
     let mut para_start = 0usize; // byte offset of paragraph start
     let mut para_runs: Vec<(usize, &AttributeRun)> = Vec::new(); // (byte offset in para, run)
+    // Stack of (indent, counter) for nested numbered lists.
+    // When indent increases, push a new level. When it decreases, pop back.
+    let mut list_stack: Vec<(i32, usize)> = Vec::new();
 
     for (byte_pos, ch) in doc.text.char_indices() {
         let current_run = doc.runs.get(run_idx);
@@ -122,7 +212,8 @@ pub fn to_markdown_with_attachments(
                 }
             }
             let style = dominant_para_style(para, &para_runs);
-            emit_paragraph(&mut out, para, &para_runs, &style, attachments);
+            let list_number = advance_list_counter(&mut list_stack, &style);
+            emit_paragraph(&mut out, para, &para_runs, &style, list_number, attachments, lr);
             out.push('\n');
             para_runs.clear();
             para_start = byte_pos + ch.len_utf8();
@@ -156,11 +247,33 @@ pub fn to_markdown_with_attachments(
             }
         }
         let style = dominant_para_style(para, &para_runs);
-        emit_paragraph(&mut out, para, &para_runs, &style, attachments);
+        let list_number = advance_list_counter(&mut list_stack, &style);
+        emit_paragraph(&mut out, para, &para_runs, &style, list_number, attachments, lr);
         out.push('\n');
     }
 
     out
+}
+
+/// Advance the numbered-list counter stack and return the current item number.
+/// Returns 0 for non-numbered-list paragraphs.
+fn advance_list_counter(stack: &mut Vec<(i32, usize)>, style: &ParagraphStyle) -> usize {
+    if style.style_type != StyleType::NumberedList {
+        stack.clear();
+        return 0;
+    }
+    let indent = style.indent;
+    // Pop deeper levels
+    while stack.last().is_some_and(|&(d, _)| d > indent) {
+        stack.pop();
+    }
+    if let Some(top) = stack.last_mut().filter(|t| t.0 == indent) {
+        top.1 += 1;
+        top.1
+    } else {
+        stack.push((indent, 1));
+        1
+    }
 }
 
 // `runs` entries are (byte_offset_into_para, run_ref). The run covers
@@ -170,7 +283,9 @@ fn emit_paragraph(
     para: &str,
     runs: &[(usize, &AttributeRun)],
     para_style: &ParagraphStyle,
+    list_number: usize,
     attachments: &HashMap<String, AttachmentContent>,
+    link_resolver: Option<&dyn Fn(&str) -> Option<String>>,
 ) {
     // Empty paragraphs get no styling — CRDT drift often puts blockquote/monospaced
     // style on blank lines between styled paragraphs.
@@ -215,7 +330,7 @@ fn emit_paragraph(
         }
         StyleType::NumberedList => {
             out.push_str(&indent_str);
-            out.push_str("1. ");
+            out.push_str(&format!("{}. ", list_number));
         }
         StyleType::Checklist => {
             out.push_str(&indent_str);
@@ -225,7 +340,7 @@ fn emit_paragraph(
         StyleType::Body => {}
     }
 
-    emit_inline(out, para, runs, attachments);
+    emit_inline(out, para, runs, attachments, link_resolver);
 }
 
 /// Pick the dominant paragraph style by weighted byte count.
@@ -274,130 +389,20 @@ fn dominant_para_style(para: &str, runs: &[(usize, &AttributeRun)]) -> Paragraph
     }
 }
 
-/// Compute the dominant inline formatting for a paragraph by weighted character count.
-/// If >50% of chars have a particular attribute, the whole paragraph gets it.
-/// This compensates for Apple Notes CRDT boundary drift where run boundaries
-/// land 1-2 chars off from the intended word boundary.
-fn dominant_format(para: &str, runs: &[(usize, &AttributeRun)]) -> AttributeRun {
-    let para_len = para.len();
-    if para_len == 0 || runs.is_empty() {
-        return AttributeRun::default();
-    }
-
-    let mut bold_bytes = 0usize;
-    let mut italic_bytes = 0usize;
-    let mut underline_bytes = 0usize;
-    let mut strike_bytes = 0usize;
-    let mut link: Option<&str> = None;
-    let mut link_bytes = 0usize;
-    let mut has_attachment = false;
-
-    for (i, &(start, run)) in runs.iter().enumerate() {
-        let end = if i + 1 < runs.len() {
-            runs[i + 1].0.min(para_len)
-        } else {
-            para_len
-        };
-        let start = start.min(para_len);
-        let span = end.saturating_sub(start);
-
-        if run.font.bold {
-            bold_bytes += span;
-        }
-        if run.font.italic {
-            italic_bytes += span;
-        }
-        if run.underlined {
-            underline_bytes += span;
-        }
-        if run.strikethrough {
-            strike_bytes += span;
-        }
-        if run.link.is_some() {
-            link_bytes += span;
-            if link.is_none() {
-                link = run.link.as_deref();
-            }
-        }
-        if run.attachment.is_some() {
-            has_attachment = true;
-        }
-    }
-
-    // If there are multiple distinct inline regions (e.g. a link in otherwise plain text,
-    // or an attachment), don't reduce to a single dominant format — use per-span rendering.
-    if has_attachment || (link_bytes > 0 && link_bytes < para_len / 2) {
-        return AttributeRun {
-            length: 0, // sentinel: caller checks this to fall back to per-span
-            ..Default::default()
-        };
-    }
-
-    let half = para_len / 2;
-    AttributeRun {
-        length: para_len, // non-zero = use this as uniform format
-        font: FontWeight {
-            bold: bold_bytes > half,
-            italic: italic_bytes > half,
-        },
-        underlined: underline_bytes > half,
-        strikethrough: strike_bytes > half,
-        link: if link_bytes > half {
-            link.map(|s| s.to_string())
-        } else {
-            None
-        },
-        ..Default::default()
-    }
-}
-
 // `runs` are (byte_offset_into_para, run_ref) sorted ascending.
 fn emit_inline(
     out: &mut String,
     para: &str,
     runs: &[(usize, &AttributeRun)],
     attachments: &HashMap<String, AttachmentContent>,
+    link_resolver: Option<&dyn Fn(&str) -> Option<String>>,
 ) {
     if runs.is_empty() {
         out.push_str(para);
         return;
     }
 
-    // Try dominant-format shortcut: if the paragraph has uniform formatting
-    // (possibly with CRDT drift at edges), apply it to the whole paragraph.
-    let dom = dominant_format(para, runs);
-    if dom.length > 0 {
-        let mut prefix = String::new();
-        let mut suffix = String::new();
-        if let Some(ref url) = dom.link {
-            prefix.push('[');
-            suffix.push_str(&format!("]({})", url));
-        }
-        if dom.font.bold && dom.font.italic {
-            prefix.push_str("***");
-            suffix.insert_str(0, "***");
-        } else if dom.font.bold {
-            prefix.push_str("**");
-            suffix.insert_str(0, "**");
-        } else if dom.font.italic {
-            prefix.push('*');
-            suffix.insert(0, '*');
-        }
-        if dom.strikethrough {
-            prefix.push_str("~~");
-            suffix.insert_str(0, "~~");
-        }
-        if dom.underlined {
-            prefix.push_str("<u>");
-            suffix.insert_str(0, "</u>");
-        }
-        out.push_str(&prefix);
-        out.push_str(para);
-        out.push_str(&suffix);
-        return;
-    }
-
-    // Fall back to per-span rendering (for paragraphs with genuine mixed formatting).
+    // Per-span rendering: each run gets its own formatting markers.
     for (i, &(start, run)) in runs.iter().enumerate() {
         let end = if i + 1 < runs.len() {
             runs[i + 1].0
@@ -418,10 +423,12 @@ fn emit_inline(
                         emit_table(out, table);
                     }
                     AttachmentContent::Image(uti) => {
-                        out.push_str(&format!("![image](attachment:{}#{})", att.identifier, uti));
+                        let ext = uti_to_extension(uti);
+                        out.push_str(&format!("![image](/Attachments/{}{})", att.identifier, ext));
                     }
                     AttachmentContent::File(uti) => {
-                        out.push_str(&format!("[file](attachment:{}#{})", att.identifier, uti));
+                        let ext = uti_to_extension(uti);
+                        out.push_str(&format!("[file](/Attachments/{}{})", att.identifier, ext));
                     }
                 }
             } else {
@@ -429,15 +436,12 @@ fn emit_inline(
                 let uti = att.type_uti.as_deref().unwrap_or("unknown");
                 if uti == "com.apple.notes.table" {
                     out.push_str(&format!("[table](attachment:{})", att.identifier));
-                } else if uti.starts_with("public.png")
-                    || uti.starts_with("public.jpeg")
-                    || uti.starts_with("public.image")
-                    || uti.starts_with("public.tiff")
-                    || uti.starts_with("public.heic")
-                {
-                    out.push_str(&format!("![image](attachment:{}#{})", att.identifier, uti));
+                } else if is_image_uti(uti) {
+                    let ext = uti_to_extension(uti);
+                    out.push_str(&format!("![image](/Attachments/{}{})", att.identifier, ext));
                 } else {
-                    out.push_str(&format!("[file](attachment:{}#{})", att.identifier, uti));
+                    let ext = uti_to_extension(uti);
+                    out.push_str(&format!("[file](/Attachments/{}{})", att.identifier, ext));
                 }
             }
             continue;
@@ -447,6 +451,8 @@ fn emit_inline(
         let mut suffix = String::new();
 
         if let Some(ref url) = run.link {
+            let resolved = link_resolver.and_then(|r| r(url));
+            let url = resolved.as_deref().unwrap_or(url);
             prefix.push('[');
             suffix.push_str(&format!("]({})", url));
         }
@@ -469,9 +475,21 @@ fn emit_inline(
             suffix.insert_str(0, "</u>");
         }
 
-        out.push_str(&prefix);
-        out.push_str(span);
-        out.push_str(&suffix);
+        // If this span is a link, move leading/trailing whitespace outside the brackets
+        if run.link.is_some() {
+            let trimmed = span.trim();
+            let leading = &span[..span.len() - span.trim_start().len()];
+            let trailing = &span[span.trim_end().len()..];
+            out.push_str(leading);
+            out.push_str(&prefix);
+            out.push_str(trimmed);
+            out.push_str(&suffix);
+            out.push_str(trailing);
+        } else {
+            out.push_str(&prefix);
+            out.push_str(span);
+            out.push_str(&suffix);
+        }
     }
 }
 
@@ -531,10 +549,22 @@ pub struct ParsedNote {
 
 /// Parse Markdown into a NoteDocument, extracting any pipe tables as pending attachments.
 pub fn from_markdown(md: &str) -> Result<ParsedNote> {
-    from_markdown_inner(md)
+    from_markdown_inner(md, None)
 }
 
-fn from_markdown_inner(md: &str) -> Result<ParsedNote> {
+/// Parse Markdown with a link resolver that maps VFS paths back to original URLs.
+/// e.g. `/Notes/Folder/Title.md` → `applenotes:note/UUID?ownerIdentifier=...`
+pub fn from_markdown_with_context(
+    md: &str,
+    link_resolver: Option<&dyn Fn(&str) -> Option<String>>,
+) -> Result<ParsedNote> {
+    from_markdown_inner(md, link_resolver)
+}
+
+fn from_markdown_inner(
+    md: &str,
+    link_resolver: Option<&dyn Fn(&str) -> Option<String>>,
+) -> Result<ParsedNote> {
     let mut text = String::new();
     let mut runs: Vec<AttributeRun> = Vec::new();
     let mut tables: Vec<TableData> = Vec::new();
@@ -589,7 +619,7 @@ fn from_markdown_inner(md: &str) -> Result<ParsedNote> {
         let (content, style) = parse_line_prefix(line, first_line);
         first_line = false;
 
-        let parsed = parse_line_inline(content, &style);
+        let parsed = parse_line_inline(content, &style, link_resolver);
         for (span_text, mut run) in parsed {
             let len = span_text.chars().count();
             if len == 0 {
@@ -816,7 +846,11 @@ fn parse_line_prefix(line: &str, is_first: bool) -> (&str, ParagraphStyle) {
     (trimmed, style)
 }
 
-fn parse_line_inline(content: &str, style: &ParagraphStyle) -> Vec<(String, AttributeRun)> {
+fn parse_line_inline(
+    content: &str,
+    style: &ParagraphStyle,
+    link_resolver: Option<&dyn Fn(&str) -> Option<String>>,
+) -> Vec<(String, AttributeRun)> {
     let mut results = Vec::new();
     let mut pos = 0;
     let mut current_text = String::new();
@@ -866,14 +900,44 @@ fn parse_line_inline(content: &str, style: &ParagraphStyle) -> Vec<(String, Attr
             flush(&mut results, &mut current_text, font, strike, underline);
             underline = false;
             pos += 4;
+        } else if rest.starts_with("![") {
+            // Image syntax: ![alt](/Attachments/UUID.ext) → attachment run
+            if let Some((alt, url, consumed)) = parse_link(&rest[1..]) {
+                if let Some(att) = parse_attachment_url(&url, true) {
+                    flush(&mut results, &mut current_text, font, strike, underline);
+                    results.push(make_attachment_run(style, att));
+                    pos += 1 + consumed; // +1 for the '!'
+                } else {
+                    // Not an attachment image, emit as-is
+                    flush(&mut results, &mut current_text, font, strike, underline);
+                    results.push((
+                        format!("![{}]({})", alt, url),
+                        make_inline_run(style, font, strike, underline, None),
+                    ));
+                    pos += 1 + consumed;
+                }
+            } else {
+                current_text.push('!');
+                pos += 1;
+            }
         } else if rest.starts_with('[') {
             if let Some((link_text, url, consumed)) = parse_link(rest) {
-                flush(&mut results, &mut current_text, font, strike, underline);
-                results.push((
-                    link_text,
-                    make_inline_run(style, font, strike, underline, Some(url)),
-                ));
-                pos += consumed;
+                // Check if this is a file attachment link
+                if let Some(att) = parse_attachment_url(&url, false) {
+                    flush(&mut results, &mut current_text, font, strike, underline);
+                    results.push(make_attachment_run(style, att));
+                    pos += consumed;
+                } else {
+                    flush(&mut results, &mut current_text, font, strike, underline);
+                    let resolved_url = link_resolver
+                        .and_then(|r| r(&url))
+                        .unwrap_or(url);
+                    results.push((
+                        link_text,
+                        make_inline_run(style, font, strike, underline, Some(resolved_url)),
+                    ));
+                    pos += consumed;
+                }
             } else {
                 // Not a valid link, consume the '['
                 current_text.push('[');
@@ -925,6 +989,49 @@ fn make_inline_run(
         link,
         attachment: None,
     }
+}
+
+fn make_attachment_run(style: &ParagraphStyle, att: AttachmentInfo) -> (String, AttributeRun) {
+    (
+        "\u{FFFC}".to_string(),
+        AttributeRun {
+            length: 0,
+            style: style.clone(),
+            attachment: Some(att),
+            ..Default::default()
+        },
+    )
+}
+
+/// Parse `/Attachments/UUID.ext` URL into an AttachmentInfo.
+/// `is_image` determines whether we infer image vs file UTI.
+fn parse_attachment_url(url: &str, is_image: bool) -> Option<AttachmentInfo> {
+    let filename = url.strip_prefix("/Attachments/")?;
+    if filename.is_empty() {
+        return None;
+    }
+    // Split into UUID and extension at the last '.'
+    let (id, ext) = if let Some(dot) = filename.rfind('.') {
+        (&filename[..dot], &filename[dot..])
+    } else {
+        (filename, "")
+    };
+    if id.is_empty() {
+        return None;
+    }
+    let uti = if ext.is_empty() {
+        if is_image {
+            "public.png".to_string()
+        } else {
+            "unknown".to_string()
+        }
+    } else {
+        extension_to_uti(ext)
+    };
+    Some(AttachmentInfo {
+        identifier: id.to_string(),
+        type_uti: Some(uti),
+    })
 }
 
 fn parse_link(s: &str) -> Option<(String, String, usize)> {
@@ -1165,7 +1272,7 @@ mod tests {
             ],
         };
 
-        let md = to_markdown_with_attachments(&doc, &attachments);
+        let md = to_markdown_with_attachments(&doc, &attachments, None::<&dyn Fn(&str) -> Option<String>>);
         assert!(md.contains("| Name"), "table header missing: {md}");
         assert!(md.contains("| foo"), "table body missing: {md}");
         assert!(md.contains("| ---"), "separator missing: {md}");
@@ -1201,8 +1308,51 @@ mod tests {
 
         let md = to_markdown(&doc);
         assert!(
-            md.contains("![image](attachment:img-uuid#public.png)"),
+            md.contains("![image](/Attachments/img-uuid.png)"),
             "image ref missing: {md}"
+        );
+    }
+
+    #[test]
+    fn mixed_formatting_not_collapsed() {
+        // A paragraph with 60% bold should NOT have the whole thing bolded.
+        let doc = NoteDocument {
+            text: "Title\nHello world is amazing foo\n".to_string(),
+            runs: vec![
+                AttributeRun {
+                    length: 6, // "Title\n"
+                    style: ParagraphStyle {
+                        style_type: StyleType::Title,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                AttributeRun {
+                    length: 6, // "Hello "
+                    ..Default::default()
+                },
+                AttributeRun {
+                    length: 16, // "world is amazing"
+                    font: FontWeight {
+                        bold: true,
+                        italic: false,
+                    },
+                    ..Default::default()
+                },
+                AttributeRun {
+                    length: 5, // " foo\n"
+                    ..Default::default()
+                },
+            ],
+        };
+        let md = to_markdown(&doc);
+        assert!(
+            md.contains("**world is amazing**"),
+            "bold span missing: {md}"
+        );
+        assert!(
+            !md.contains("**Hello"),
+            "non-bold text incorrectly bolded: {md}"
         );
     }
 }

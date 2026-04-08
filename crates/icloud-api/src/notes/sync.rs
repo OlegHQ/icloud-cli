@@ -155,12 +155,7 @@ impl NotesSyncEngine {
                     continue; // already resolved (table)
                 }
                 let uti = att.type_uti.as_deref().unwrap_or("unknown");
-                if uti.starts_with("public.png")
-                    || uti.starts_with("public.jpeg")
-                    || uti.starts_with("public.image")
-                    || uti.starts_with("public.tiff")
-                    || uti.starts_with("public.heic")
-                {
+                if markdown::is_image_uti(uti) {
                     attachments.insert(
                         att.identifier.clone(),
                         AttachmentContent::Image(uti.to_string()),
@@ -174,7 +169,24 @@ impl NotesSyncEngine {
             }
         }
 
-        Ok(markdown::to_markdown_with_attachments(&doc, &attachments))
+        // Build link resolver: map applenotes:note/UUID → /Notes/Folder/Title.md
+        let link_resolver = |url: &str| -> Option<String> {
+            let rest = url.strip_prefix("applenotes:note/")?;
+            let uuid = rest.split('?').next()?;
+            let nd = self.cache.notes.get(uuid)?;
+            let folder_name = nd
+                .folder_ref
+                .as_ref()
+                .and_then(|fr| self.cache.folders.get(fr))?;
+            let stem = markdown::title_to_filename_stem(&nd.title);
+            Some(format!("/Notes/{}/{}.md", folder_name, stem))
+        };
+
+        Ok(markdown::to_markdown_with_attachments(
+            &doc,
+            &attachments,
+            Some(&link_resolver),
+        ))
     }
 
     /// Fetch the full body and dump raw protobuf attribute runs (for debugging).
