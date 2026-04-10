@@ -93,6 +93,13 @@ pub fn default_notes_db_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("./notes.redb"))
 }
 
+/// Default path for the search index directory (XDG data dir).
+pub fn default_search_index_path() -> PathBuf {
+    project_dirs()
+        .map(|d| d.data_dir().join("search-index"))
+        .unwrap_or_else(|| PathBuf::from("./search-index"))
+}
+
 pub fn unquote_cookie_value(v: &str) -> String {
     let v = v.trim();
     if v.len() >= 2 && v.starts_with('"') && v.ends_with('"') {

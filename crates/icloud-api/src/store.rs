@@ -363,6 +363,7 @@ impl<C: StoreCache> RedbStore<C> {
             let write = db.begin_write().map_err(|e| {
                 crate::error::Error::from_label(label, format!("redb write txn: {e}"))
             })?;
+            let updated = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
 
             let meta_def: TableDefinition<&str, &str> = TableDefinition::new(meta_name);
             let mut meta_table = write
@@ -403,7 +404,6 @@ impl<C: StoreCache> RedbStore<C> {
                         t.remove(KEY_OWNER_ID).ok();
                     }
                 }
-                let updated = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
                 t.insert(KEY_UPDATED_AT, updated.as_str()).map_err(|e| {
                     crate::error::Error::from_label(label, format!("meta updated: {e}"))
                 })?;
@@ -509,6 +509,7 @@ impl<C: StoreCache> RedbStore<C> {
             write
                 .commit()
                 .map_err(|e| crate::error::Error::from_label(label, format!("redb commit: {e}")))?;
+            cache.set_updated_at_str(Some(updated));
             cache.set_sync_token(token_to_write.clone());
             cache.set_loaded_disk_sync_token(token_to_write);
             Ok(())

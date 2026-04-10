@@ -41,6 +41,28 @@ pub fn render_reminder(fm: &ReminderFrontmatter, body: &str) -> String {
     render_frontmatter(fm, body)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HmeFrontmatter {
+    /// Generated iCloud email address (e.g. `abc@icloud.com`).
+    pub email: String,
+    /// User-chosen label shown in iCloud settings.
+    pub label: String,
+    /// Opaque ID used by the iCloud API for updates / deletion.
+    pub anonymous_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forward_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+}
+
+pub fn render_hme(fm: &HmeFrontmatter, body: &str) -> String {
+    render_frontmatter(fm, body)
+}
+
 /// Split optional YAML frontmatter; returns (body after fm, optional yaml text).
 pub fn strip_frontmatter(input: &str) -> (Cow<'_, str>, Option<String>) {
     let t = input.trim_start();

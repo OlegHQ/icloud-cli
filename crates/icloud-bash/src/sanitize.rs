@@ -1,38 +1,15 @@
 //! Title ↔ filename mapping (SPEC: slash → U+2215, collisions, 255-byte cap).
 
-use std::collections::HashSet;
-
-const DIV_SLASH: char = '\u{2215}'; // ∕
-
-pub use icloud_api::notes::markdown::title_to_filename_stem;
-
-/// Build a unique `.md` filename inside a folder, appending ` (2)`, ` (3)`, … on collision.
-///
-/// `existing` must contain **lowercased** filenames for O(1) collision checks.
-pub fn disambiguate_filename(stem: &str, existing: &HashSet<String>) -> String {
-    let base = format!("{stem}.md");
-    if !existing.contains(&base.to_ascii_lowercase()) {
-        return base;
-    }
-    let mut n = 2u32;
-    loop {
-        let candidate = format!("{stem} ({n}).md");
-        if !existing.contains(&candidate.to_ascii_lowercase()) {
-            return candidate;
-        }
-        n += 1;
-    }
-}
-
-/// Map filename (with `.md`) back to a title string (reverse U+2215 → `/`).
-pub fn filename_to_title(filename: &str) -> String {
-    let stem = filename.strip_suffix(".md").unwrap_or(filename);
-    stem.replace(DIV_SLASH, "/")
-}
+pub use icloud_api::notes::markdown::{
+    disambiguate_filename, filename_to_title, title_to_filename_stem,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    const DIV_SLASH: char = '\u{2215}';
 
     #[test]
     fn slash_becomes_division_slash() {

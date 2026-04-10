@@ -87,7 +87,9 @@ fn collect_table_fields(buf: &[u8], state: &mut TableFields, depth: usize) {
     for col_container in proto_get_all_bytes(buf, 16) {
         state.num_cols += 1;
         if let Some(row_structure) = proto_get_bytes(col_container, 2) {
-            state.rows_per_col.push(proto_get_all_bytes(row_structure, 1).len());
+            state
+                .rows_per_col
+                .push(proto_get_all_bytes(row_structure, 1).len());
         }
     }
 
@@ -100,7 +102,9 @@ fn collect_table_fields(buf: &[u8], state: &mut TableFields, depth: usize) {
 
     // field 10 = cell content (NoteDocument-like)
     for cell_doc in proto_get_all_bytes(buf, 10) {
-        state.cell_texts.push(proto_get_string(cell_doc, 2).unwrap_or_default());
+        state
+            .cell_texts
+            .push(proto_get_string(cell_doc, 2).unwrap_or_default());
     }
 
     // Recurse into field 3 (nested operations)

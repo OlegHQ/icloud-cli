@@ -1,6 +1,6 @@
 //! Bidirectional Markdown ↔ NoteDocument conversion.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::Result;
 
@@ -52,6 +52,30 @@ pub fn title_to_filename_stem(title: &str) -> String {
         s.truncate(end);
     }
     s
+}
+
+/// Build a unique `.md` filename inside a folder, appending ` (2)`, ` (3)`, … on collision.
+///
+/// `existing` must contain lowercased filenames for O(1) collision checks.
+pub fn disambiguate_filename(stem: &str, existing: &HashSet<String>) -> String {
+    let base = format!("{stem}.md");
+    if !existing.contains(&base.to_ascii_lowercase()) {
+        return base;
+    }
+    let mut n = 2u32;
+    loop {
+        let candidate = format!("{stem} ({n}).md");
+        if !existing.contains(&candidate.to_ascii_lowercase()) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Map filename (with `.md`) back to a title string (reverse U+2215 → `/`).
+pub fn filename_to_title(filename: &str) -> String {
+    let stem = filename.strip_suffix(".md").unwrap_or(filename);
+    stem.replace(DIV_SLASH, "/")
 }
 
 // ── UTI ↔ Extension mapping ─────────────────────────────
@@ -166,7 +190,11 @@ pub enum AttachmentContent {
 /// `attachments` maps attachment identifier → resolved content.
 /// Pass an empty map if attachment data isn't available.
 pub fn to_markdown(doc: &NoteDocument) -> String {
-    to_markdown_with_attachments(doc, &HashMap::new(), None::<&dyn Fn(&str) -> Option<String>>)
+    to_markdown_with_attachments(
+        doc,
+        &HashMap::new(),
+        None::<&dyn Fn(&str) -> Option<String>>,
+    )
 }
 
 /// Convert a NoteDocument to Markdown with resolved attachment content.
@@ -192,8 +220,8 @@ pub fn to_markdown_with_attachments(
     let mut char_count = 0usize; // chars consumed in current run
     let mut para_start = 0usize; // byte offset of paragraph start
     let mut para_runs: Vec<(usize, &AttributeRun)> = Vec::new(); // (byte offset in para, run)
-    // Stack of (indent, counter) for nested numbered lists.
-    // When indent increases, push a new level. When it decreases, pop back.
+                                                                 // Stack of (indent, counter) for nested numbered lists.
+                                                                 // When indent increases, push a new level. When it decreases, pop back.
     let mut list_stack: Vec<(i32, usize)> = Vec::new();
 
     for (byte_pos, ch) in doc.text.char_indices() {
@@ -220,7 +248,15 @@ pub fn to_markdown_with_attachments(
             }
             let style = dominant_para_style(para, &para_runs);
             let list_number = advance_list_counter(&mut list_stack, &style);
-            emit_paragraph(&mut out, para, &para_runs, &style, list_number, attachments, lr);
+            emit_paragraph(
+                &mut out,
+                para,
+                &para_runs,
+                &style,
+                list_number,
+                attachments,
+                lr,
+            );
             out.push('\n');
             para_runs.clear();
             para_start = byte_pos + ch.len_utf8();
@@ -255,7 +291,15 @@ pub fn to_markdown_with_attachments(
         }
         let style = dominant_para_style(para, &para_runs);
         let list_number = advance_list_counter(&mut list_stack, &style);
-        emit_paragraph(&mut out, para, &para_runs, &style, list_number, attachments, lr);
+        emit_paragraph(
+            &mut out,
+            para,
+            &para_runs,
+            &style,
+            list_number,
+            attachments,
+            lr,
+        );
         out.push('\n');
     }
 
@@ -432,12 +476,18 @@ fn emit_inline(
                     AttachmentContent::Image(uti, title) => {
                         let ext = attachment_extension(title.as_deref(), uti);
                         let alt = title.as_deref().unwrap_or("image");
-                        out.push_str(&format!("![{}](/Attachments/{}{})", alt, att.identifier, ext));
+                        out.push_str(&format!(
+                            "![{}](/Attachments/{}{})",
+                            alt, att.identifier, ext
+                        ));
                     }
                     AttachmentContent::File(uti, title) => {
                         let ext = attachment_extension(title.as_deref(), uti);
                         let text = title.as_deref().unwrap_or("file");
-                        out.push_str(&format!("[{}](/Attachments/{}{})", text, att.identifier, ext));
+                        out.push_str(&format!(
+                            "[{}](/Attachments/{}{})",
+                            text, att.identifier, ext
+                        ));
                     }
                 }
             } else {
@@ -627,8 +677,10 @@ fn from_markdown_inner(
 
         let (content, style) = parse_line_prefix(line, first_line);
         first_line = false;
+        let is_blank = content.is_empty();
 
         let parsed = parse_line_inline(content, &style, link_resolver);
+        let mut pushed_any = false;
         for (span_text, mut run) in parsed {
             let len = span_text.chars().count();
             if len == 0 {
@@ -637,18 +689,25 @@ fn from_markdown_inner(
             run.length = len;
             text.push_str(&span_text);
             runs.push(run);
+            pushed_any = true;
         }
-        // Add newline
-        if !text.is_empty() {
+
+        // Add newline. For blank lines we must NOT extend the previous run's
+        // style — otherwise a blank line after `- [ ] Task 1` would grow the
+        // Checklist run's length to 2 paragraphs, and Apple Notes would render
+        // the trailing blank as a spurious empty checkbox. Blank lines always
+        // start a fresh Body run that owns only their `\n`.
+        if is_blank {
+            text.push('\n');
+            runs.push(AttributeRun {
+                length: 1,
+                style: ParagraphStyle::default(),
+                ..Default::default()
+            });
+        } else if pushed_any {
             text.push('\n');
             if let Some(last) = runs.last_mut() {
                 last.length += 1;
-            } else {
-                runs.push(AttributeRun {
-                    length: 1,
-                    style,
-                    ..Default::default()
-                });
             }
         }
         i += 1;
@@ -938,9 +997,7 @@ fn parse_line_inline(
                     pos += consumed;
                 } else {
                     flush(&mut results, &mut current_text, font, strike, underline);
-                    let resolved_url = link_resolver
-                        .and_then(|r| r(&url))
-                        .unwrap_or(url);
+                    let resolved_url = link_resolver.and_then(|r| r(&url)).unwrap_or(url);
                     results.push((
                         link_text,
                         make_inline_run(style, font, strike, underline, Some(resolved_url)),
@@ -1281,7 +1338,11 @@ mod tests {
             ],
         };
 
-        let md = to_markdown_with_attachments(&doc, &attachments, None::<&dyn Fn(&str) -> Option<String>>);
+        let md = to_markdown_with_attachments(
+            &doc,
+            &attachments,
+            None::<&dyn Fn(&str) -> Option<String>>,
+        );
         assert!(md.contains("| Name"), "table header missing: {md}");
         assert!(md.contains("| foo"), "table body missing: {md}");
         assert!(md.contains("| ---"), "separator missing: {md}");
@@ -1319,6 +1380,138 @@ mod tests {
         assert!(
             md.contains("![image](/Attachments/img-uuid.png)"),
             "image ref missing: {md}"
+        );
+    }
+
+    #[test]
+    fn roundtrip_title_body_checklist_is_stable() {
+        // Regression for the "note duplicated in Apple Notes after edit" bug.
+        // Start from what `to_markdown` would produce for a note with title
+        // "New Note", a body paragraph "Testing?", and one unchecked task —
+        // round-trip it through parse → render → parse and make sure the
+        // resulting `doc.text` stays the same (no growing "New Note\nNew Note").
+        let original_md = "# New Note\n\nTesting?\n\n- [ ] Task 1\n";
+        let parsed = from_markdown(original_md).unwrap();
+        let doc1 = parsed.doc.clone();
+        let rendered = to_markdown(&doc1);
+        let parsed2 = from_markdown(&rendered).unwrap();
+        let doc2 = parsed2.doc;
+
+        // Title should be "New Note", not "New Note\nNew Note".
+        let title_line = doc2.text.lines().next().unwrap_or_default();
+        assert_eq!(
+            title_line, "New Note",
+            "title drifted on round-trip; text = {:?}",
+            doc2.text
+        );
+        // The word "New Note" must appear exactly once.
+        assert_eq!(
+            doc2.text.matches("New Note").count(),
+            1,
+            "title duplicated on round-trip; text = {:?}",
+            doc2.text
+        );
+        // Exactly one checklist paragraph should survive.
+        let checklists = doc2
+            .runs
+            .iter()
+            .filter(|r| r.style.style_type == StyleType::Checklist)
+            .count();
+        assert_eq!(
+            checklists, 1,
+            "checklist count drift; runs = {:#?}",
+            doc2.runs
+        );
+    }
+
+    #[test]
+    fn roundtrip_proto_encode_decode_is_stable() {
+        // Full cycle: markdown → doc → proto bytes → doc → markdown.
+        // Verifies that `encode_note_body` + `decode_note_body` preserves text
+        // and paragraph styles (modulo the CRDT metadata we regenerate each
+        // time).
+        let original_md = "# New Note\n\nTesting?\n\n- [ ] Task 1\n";
+        let parsed = from_markdown(original_md).unwrap();
+        let b64 = crate::notes::proto::encode_note_body(&parsed.doc).unwrap();
+        let decoded = crate::notes::proto::decode_note_body(&b64).unwrap();
+
+        assert_eq!(
+            decoded.text, parsed.doc.text,
+            "proto roundtrip lost text content"
+        );
+        assert_eq!(
+            decoded.text.matches("New Note").count(),
+            1,
+            "text duplicated on proto roundtrip: {:?}",
+            decoded.text
+        );
+
+        let re_rendered = to_markdown(&decoded);
+        assert_eq!(
+            re_rendered.matches("New Note").count(),
+            1,
+            "title duplicated on md→proto→md roundtrip: {:?}",
+            re_rendered
+        );
+    }
+
+    #[test]
+    fn blank_line_after_checklist_does_not_extend_checklist_run() {
+        // Regression: a trailing blank line was being folded into the
+        // previous Checklist run, so Apple Notes rendered a spurious empty
+        // checkbox under the last real task. After the fix the trailing \n
+        // must belong to a Body-style run instead.
+        let md = "# Title\n- [ ] Task 1\n\n";
+        let parsed = from_markdown(md).unwrap();
+        let checklists: Vec<_> = parsed
+            .doc
+            .runs
+            .iter()
+            .filter(|r| r.style.style_type == StyleType::Checklist)
+            .collect();
+        assert_eq!(checklists.len(), 1, "should have exactly one checklist run");
+        // "- [ ] Task 1" → "Task 1\n" = 7 chars; the run must NOT include the
+        // trailing blank line.
+        assert_eq!(
+            checklists[0].length, 7,
+            "checklist run grew across a blank line: runs = {:#?}",
+            parsed.doc.runs
+        );
+    }
+
+    #[test]
+    fn blank_line_after_bullet_does_not_extend_bullet_run() {
+        let md = "# Title\n- Item\n\nBody\n";
+        let parsed = from_markdown(md).unwrap();
+        let bullets: Vec<_> = parsed
+            .doc
+            .runs
+            .iter()
+            .filter(|r| r.style.style_type == StyleType::BulletList)
+            .collect();
+        assert_eq!(bullets.len(), 1);
+        assert_eq!(bullets[0].length, 5, "`Item\\n` = 5 chars");
+    }
+
+    #[test]
+    fn roundtrip_two_blank_lines_between_title_and_body() {
+        // The edit VFS file on disk has TWO blank lines between `# New Note`
+        // and the body (visible in the nvim screenshot the user posted).
+        // Make sure that shape also round-trips stably.
+        let md = "# New Note\n\n\nTesting?\n\n- [ ] Task 1\n";
+        let parsed = from_markdown(md).unwrap();
+        let rendered = to_markdown(&parsed.doc);
+        assert_eq!(
+            rendered.matches("New Note").count(),
+            1,
+            "title duplicated; rendered = {:?}",
+            rendered
+        );
+        assert_eq!(
+            rendered.matches("Testing?").count(),
+            1,
+            "body duplicated; rendered = {:?}",
+            rendered
         );
     }
 

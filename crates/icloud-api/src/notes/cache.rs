@@ -18,6 +18,10 @@ pub struct NoteData {
     pub deleted: bool,
     #[serde(default, rename = "change_tag")]
     pub change_tag: Option<String>,
+    #[serde(default, rename = "body_markdown")]
+    pub body_markdown: Option<String>,
+    #[serde(default, rename = "search_text")]
+    pub search_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -1,7 +1,9 @@
 mod cmd_bash;
+mod cmd_cp;
 mod cmd_hme;
 mod cmd_notes;
 mod cmd_reminders;
+mod cmd_search;
 mod output;
 
 use std::path::PathBuf;
@@ -11,7 +13,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use icloud_api::notes::{NotesStore, NotesSyncEngine};
 use icloud_api::reminders::{RemindersStore, SyncEngine};
 use icloud_api::session::{
-    default_reminders_db_path, default_session_path, load_session, save_session, SecretsBackend,
+    default_notes_db_path, default_reminders_db_path, default_session_path, load_session,
+    save_session, SecretsBackend,
 };
 use icloud_api::Result as IResult;
 use icloud_api::{is_cache_fresh, AuthFlow};
@@ -29,6 +32,7 @@ const EXIT_UPSTREAM: i32 = 4;
 
 fn exit_code(e: &icloud_api::Error) -> i32 {
     match e {
+        icloud_api::Error::Usage(_) => EXIT_USAGE,
         icloud_api::Error::Auth(_)
         | icloud_api::Error::Session(_)
         | icloud_api::Error::Keyring(_) => EXIT_AUTH,
@@ -93,6 +97,34 @@ impl RemindersArgs {
     }
     pub(crate) fn db_path(&self) -> PathBuf {
         self.db.clone().unwrap_or_else(default_reminders_db_path)
+    }
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct IcloudFsArgs {
+    #[command(flatten)]
+    pub(crate) sess: SessionArg,
+    /// Path to notes database file.
+    #[arg(long)]
+    notes_db: Option<PathBuf>,
+    /// Path to reminders database file.
+    #[arg(long)]
+    reminders_db: Option<PathBuf>,
+}
+
+impl IcloudFsArgs {
+    pub(crate) fn session_path(&self) -> PathBuf {
+        self.sess.path()
+    }
+
+    pub(crate) fn notes_db_path(&self) -> PathBuf {
+        self.notes_db.clone().unwrap_or_else(default_notes_db_path)
+    }
+
+    pub(crate) fn reminders_db_path(&self) -> PathBuf {
+        self.reminders_db
+            .clone()
+            .unwrap_or_else(default_reminders_db_path)
     }
 }
 
@@ -195,19 +227,47 @@ enum Command {
     /// Run bash (bashbox) against the iCloud virtual filesystem.
     Bash {
         #[command(flatten)]
-        sess: SessionArg,
-        /// Notes database path.
-        #[arg(long)]
-        notes_db: Option<PathBuf>,
-        /// Reminders database path.
-        #[arg(long)]
-        reminders_db: Option<PathBuf>,
+        args: IcloudFsArgs,
         /// Execute a one-line script (same as `bash -c`).
         #[arg(short = 'c', long)]
         command: Option<String>,
         /// Optional script file (use `-` for stdin when no `-c`).
         #[arg(value_name = "SCRIPT")]
         script: Option<PathBuf>,
+    },
+    /// Full-text search across iCloud Notes and Reminders VFS paths and file contents.
+    Search {
+        #[command(flatten)]
+        args: IcloudFsArgs,
+        /// Search query.
+        query: String,
+        /// Limit results to one service.
+        #[arg(long, value_enum)]
+        service: Option<cmd_search::SearchServiceArg>,
+        /// Limit results to a VFS folder/list path like `/Notes/Work` or `icloud:/Reminders/Home`.
+        #[arg(long = "path", value_name = "VFS_PATH")]
+        paths: Vec<String>,
+        /// Maximum results to show.
+        #[arg(short = 'n', long, default_value = "25")]
+        limit: usize,
+        /// Rebuild the search index before querying.
+        #[arg(long)]
+        rebuild: bool,
+        /// Search index directory.
+        #[arg(long)]
+        index: Option<PathBuf>,
+    },
+    /// Copy files between the host filesystem and the iCloud VFS.
+    Cp {
+        #[command(flatten)]
+        args: IcloudFsArgs,
+        /// Copy directories recursively.
+        #[arg(short = 'r', long)]
+        recursive: bool,
+        /// Source path. Use `icloud:/...` for the iCloud side.
+        src: String,
+        /// Destination path. Use `icloud:/...` for the iCloud side.
+        dest: String,
     },
 }
 
@@ -453,23 +513,30 @@ async fn run(cli: Cli, out: OutputMode) -> IResult<()> {
         Command::Notes(sub) => cmd_notes::handle_notes(out, secrets, max_age, sub).await,
         Command::Hme(sub) => cmd_hme::handle_hme(json, secrets, sub).await,
         Command::Bash {
-            sess,
-            notes_db,
-            reminders_db,
+            args,
             command,
             script,
+        } => cmd_bash::run_bash(secrets, max_age, args, command, script).await,
+        Command::Search {
+            args,
+            query,
+            service,
+            paths,
+            limit,
+            rebuild,
+            index,
         } => {
-            cmd_bash::run_bash(
-                secrets,
-                max_age,
-                sess,
-                notes_db,
-                reminders_db,
-                command,
-                script,
+            cmd_search::run_search(
+                out, secrets, max_age, args, query, service, paths, limit, rebuild, index,
             )
             .await
         }
+        Command::Cp {
+            args,
+            recursive,
+            src,
+            dest,
+        } => cmd_cp::run_cp(out, secrets, max_age, args, recursive, &src, &dest).await,
     }
 }
 

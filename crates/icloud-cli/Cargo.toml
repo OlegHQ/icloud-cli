@@ -15,11 +15,13 @@ clap = { version = "4", features = ["derive", "env"] }
 directories = "6"
 icloud-api = { path = "../icloud-api" }
 icloud-bash = { path = "../icloud-bash" }
-bashbox = { git = "https://github.com/OlegHQ/bashbox", rev = "204b7d7223ddb4736e2930221844d6738cf42d9e" }
+bashbox = { git = "https://github.com/OlegHQ/bashbox", rev = "ac7c34eebcc2efcf1895b566c72d9c3265ecad79" }
 indicatif = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tracing = "0.1"
 rustyline = "15"
+shell-words = "1"
+tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -24,6 +24,10 @@ pub enum VfsTarget {
     },
     HideMyEmailRoot,
     HideMyEmailAliases,
+    /// `/HideMyEmail/<alias>.md` — a single alias rendered as markdown.
+    HideMyEmailFile {
+        filename: String,
+    },
     /// `/Attachments` listing
     AttachmentsRoot,
     /// `/Attachments/<file>`
@@ -123,6 +127,9 @@ pub fn classify(path: &str) -> Result<VfsTarget, ()> {
         Some("HideMyEmail") => match parts.len() {
             1 => Ok(VfsTarget::HideMyEmailRoot),
             2 if parts[1] == "aliases.json" => Ok(VfsTarget::HideMyEmailAliases),
+            2 if parts[1].ends_with(".md") => Ok(VfsTarget::HideMyEmailFile {
+                filename: parts[1].to_string(),
+            }),
             _ => Err(()),
         },
         Some("Attachments") => match parts.len() {

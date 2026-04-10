@@ -121,6 +121,19 @@ impl NotesSyncEngine {
         let result = modify_notes(&self.ck, vec![op]).await?;
         check_errors(&result)?;
         self.cache.ds.item_changed(record_name.clone());
+        self.cache.notes.insert(
+            record_name.clone(),
+            NoteData {
+                title: title.to_string(),
+                snippet: snippet.to_string(),
+                folder_ref: Some(folder_id),
+                modified_ts: Some(now),
+                deleted: false,
+                change_tag: first_change_tag(&result),
+                body_markdown: None,
+                search_text: Some(super::sync::decode_search_text(body_b64)),
+            },
+        );
         Ok(record_name)
     }
 
@@ -193,6 +206,8 @@ impl NotesSyncEngine {
                 folder_ref: Some(folder_id),
                 modified_ts: Some(now),
                 change_tag,
+                body_markdown: Some(md.to_string()),
+                search_text: Some(md.to_string()),
                 ..Default::default()
             },
         );
@@ -268,6 +283,8 @@ impl NotesSyncEngine {
             nd.snippet = snippet;
             nd.modified_ts = Some(now);
             nd.change_tag = first_change_tag(&result);
+            nd.body_markdown = Some(md.to_string());
+            nd.search_text = Some(md.to_string());
         }
         self.cache.ds.item_changed(full);
         Ok(())

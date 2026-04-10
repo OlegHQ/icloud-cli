@@ -119,7 +119,7 @@ crates/icloud-bash/
 - **`icloud-api`**: CloudKit protocol, sync engines, cache, persistence. No knowledge of bash or VFS paths.
 - **`icloud-bash`**: `FileSystem` implementation and iCloud path semantics only.
 - **`icloud-cli`**: User-facing `icloud bash` command and wiring.
-- **`bashbox`**: Upstream interpreter. Do **not** fork in this repo for iCloud-specific behavior; extend `icloud-bash` / `icloud-cli` instead, or contribute generic fixes upstream.
+- **`bashbox`**: Upstream interpreter — we maintain the fork at [`OlegHQ/bashbox`](https://github.com/OlegHQ/bashbox), pinned by git rev in both `icloud-cli/Cargo.toml` and `icloud-bash/Cargo.toml`. **For iCloud-specific behavior**, extend `icloud-bash` / `icloud-cli` — do not patch bashbox. **For generic bash bugs** (quoting, expansion, builtins, glob, etc.), fix them in the local checkout at `../bashbox`, run `cargo test --lib` there, commit + push, then bump the `rev = "..."` in both `Cargo.toml` files in lockstep and re-run `cargo build` at the workspace root so `Cargo.lock` updates.
 
 ### Testing strategy
 

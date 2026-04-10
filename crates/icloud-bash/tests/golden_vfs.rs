@@ -5,11 +5,11 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use bashbox::bash::BashOptions;
+use bashbox::{Bash, InMemoryFs};
 use icloud_bash::frontmatter::{render_note, strip_frontmatter, NoteFrontmatter};
 use icloud_bash::pathmap::{classify, normalize_vpath, VfsTarget};
 use icloud_bash::sanitize::{disambiguate_filename, filename_to_title, title_to_filename_stem};
-use bashbox::bash::BashOptions;
-use bashbox::{Bash, InMemoryFs};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn bash_in_memory_runs_simple_command() {

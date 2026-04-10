@@ -2,6 +2,7 @@
 
 use icloud_api::notes::models::{Note as NoteModel, NoteFolder};
 use icloud_api::reminders::{models::priority_label, Reminder, ReminderList};
+use icloud_api::search::SearchHit;
 use icloud_api::session::SessionData;
 
 // ── Output mode ──────────────────────────────────────────
@@ -70,14 +71,14 @@ pub fn print_kv(pairs: &[(&str, &str)]) {
     }
 }
 
-pub fn print_json<T: serde::Serialize>(value: &T) {
+pub fn print_json<T: serde::Serialize + ?Sized>(value: &T) {
     println!(
         "{}",
         serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".into())
     );
 }
 
-pub fn print_json_compact<T: serde::Serialize>(value: &T) {
+pub fn print_json_compact<T: serde::Serialize + ?Sized>(value: &T) {
     println!(
         "{}",
         serde_json::to_string(value).unwrap_or_else(|_| "null".into())
@@ -228,6 +229,49 @@ pub fn print_note_folders_mode(mode: OutputMode, folders: &[NoteFolder]) {
         print_tree(&mut rows, root, &children, 0);
     }
     print_table_mode(&["NAME", "ID"], &rows, mode);
+}
+
+// ── Search ───────────────────────────────────────────────
+
+pub fn print_search_hits_mode(mode: OutputMode, hits: &[SearchHit]) {
+    if mode.json {
+        print_json(hits);
+        return;
+    }
+    if mode.quiet {
+        println!("{}", hits.len());
+        return;
+    }
+    for (idx, hit) in hits.iter().enumerate() {
+        if idx > 0 {
+            println!();
+        }
+
+        let kind = match hit.kind {
+            icloud_api::search::SearchResultKind::NoteFolder => "note_folder",
+            icloud_api::search::SearchResultKind::NoteFile => "note_file",
+            icloud_api::search::SearchResultKind::ReminderList => "reminder_list",
+            icloud_api::search::SearchResultKind::ReminderFile => "reminder_file",
+            icloud_api::search::SearchResultKind::HideMyEmailAlias => "hide_my_email_alias",
+        };
+        println!("{}", hit.name);
+        println!("  type: {kind}");
+        println!("  path: {}", hit.path);
+        if let Some(container) = hit.container.as_deref().filter(|value| !value.is_empty()) {
+            println!("  list: {container}");
+        }
+        if matches!(hit.kind, icloud_api::search::SearchResultKind::ReminderFile) {
+            if let Some(due) = hit.due.as_deref().filter(|value| !value.is_empty()) {
+                println!("  due: {due}");
+            }
+        }
+
+        if let Some(snippet) = hit.snippet.as_deref() {
+            if !snippet.is_empty() {
+                println!("  snippet: {snippet}");
+            }
+        }
+    }
 }
 
 // ── Session / Whoami ───────────────────────────────────────

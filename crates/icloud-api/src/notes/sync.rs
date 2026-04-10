@@ -1,5 +1,7 @@
 //! CloudKit zone sync engine for Notes.
 
+use std::collections::{HashMap, HashSet};
+
 use serde_json::Value;
 
 use crate::cloudkit::{
@@ -26,6 +28,7 @@ const SYNC_DESIRED_KEYS: &[&str] = &[
 const SYNC_RECORD_TYPES: &[&str] = &["Note", "Folder"];
 
 const BODY_DESIRED_KEYS: &[&str] = &["TextDataEncrypted"];
+const SEARCH_LOOKUP_BATCH_SIZE: usize = 100;
 
 pub struct NotesSyncEngine {
     pub ck: CloudKitClient,
@@ -106,8 +109,22 @@ impl NotesSyncEngine {
     /// Fetch the full body of a note and return it as Markdown.
     /// Resolves table attachments to render pipe tables inline.
     pub async fn fetch_body(&mut self, record_name: &str) -> Result<String> {
+        if let Some(body) = self
+            .cache
+            .notes
+            .get(record_name)
+            .and_then(|note| note.body_markdown.clone())
+        {
+            return Ok(body);
+        }
+
         let b64 = self.fetch_b64(record_name).await?;
         if b64.is_empty() {
+            if let Some(note) = self.cache.notes.get_mut(record_name) {
+                note.body_markdown = Some(String::new());
+                note.search_text = Some(String::new());
+                self.cache.ds.item_changed(record_name.to_string());
+            }
             return Ok(String::new());
         }
         let doc = proto::decode_note_body(&b64)?;
@@ -214,11 +231,79 @@ impl NotesSyncEngine {
             Some(format!("/Notes/{}/{}.md", folder_name, stem))
         };
 
-        Ok(markdown::to_markdown_with_attachments(
-            &doc,
-            &attachments,
-            Some(&link_resolver),
-        ))
+        let markdown =
+            markdown::to_markdown_with_attachments(&doc, &attachments, Some(&link_resolver));
+
+        if let Some(note) = self.cache.notes.get_mut(record_name) {
+            note.body_markdown = Some(markdown.clone());
+            note.search_text = Some(markdown.clone());
+            self.cache.ds.item_changed(record_name.to_string());
+        }
+
+        Ok(markdown)
+    }
+
+    pub async fn hydrate_search_texts(&mut self, record_names: &[String]) -> Result<()> {
+        let note_ids: Vec<String> = record_names
+            .iter()
+            .filter(|record_name| {
+                self.cache
+                    .notes
+                    .get(record_name.as_str())
+                    .is_some_and(|note| !note.deleted && note.search_text.is_none())
+            })
+            .cloned()
+            .collect();
+
+        if note_ids.is_empty() {
+            return Ok(());
+        }
+
+        let owner = self.owner_id().await?;
+        for chunk in note_ids.chunks(SEARCH_LOOKUP_BATCH_SIZE) {
+            let record_names: Vec<&str> = chunk.iter().map(String::as_str).collect();
+            let result = self
+                .ck
+                .lookup_records(&owner, &record_names, BODY_DESIRED_KEYS)
+                .await?;
+
+            let mut resolved = HashMap::with_capacity(chunk.len());
+            if let Some(records) = result["records"].as_array() {
+                for record in records {
+                    let Some(record_name) = record["recordName"].as_str() else {
+                        continue;
+                    };
+                    if record["serverErrorCode"].as_str().is_some() {
+                        continue;
+                    }
+                    let search_text = record["fields"]["TextDataEncrypted"]["value"]
+                        .as_str()
+                        .map(decode_search_text)
+                        .unwrap_or_default();
+                    resolved.insert(record_name.to_string(), search_text);
+                }
+            }
+
+            let resolved_names: HashSet<String> = resolved.keys().cloned().collect();
+            for (record_name, search_text) in resolved {
+                if let Some(note) = self.cache.notes.get_mut(&record_name) {
+                    note.search_text = Some(search_text);
+                    self.cache.ds.item_changed(record_name);
+                }
+            }
+
+            for record_name in chunk {
+                if resolved_names.contains(record_name) {
+                    continue;
+                }
+                if let Some(note) = self.cache.notes.get_mut(record_name) {
+                    note.search_text = Some(String::new());
+                    self.cache.ds.item_changed(record_name.clone());
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Fetch the full body and dump raw protobuf attribute runs (for debugging).
@@ -322,6 +407,34 @@ impl NotesSyncEngine {
                             .map(|s| s.to_string());
                         let is_deleted = ck_field_int(&fields, "Deleted") != 0;
 
+                        let cached_body = self
+                            .cache
+                            .notes
+                            .get(record_name)
+                            .and_then(|existing| {
+                                (existing.modified_ts == modified_ts
+                                    && existing.folder_ref == folder_ref
+                                    && existing.deleted == is_deleted)
+                                    .then(|| existing.body_markdown.clone())
+                            })
+                            .flatten();
+                        let cached_search_text = self
+                            .cache
+                            .notes
+                            .get(record_name)
+                            .and_then(|existing| {
+                                (existing.modified_ts == modified_ts
+                                    && existing.folder_ref == folder_ref
+                                    && existing.deleted == is_deleted)
+                                    .then(|| {
+                                        existing
+                                            .search_text
+                                            .clone()
+                                            .or_else(|| existing.body_markdown.clone())
+                                    })
+                            })
+                            .flatten();
+
                         let nd = NoteData {
                             title: if title.is_empty() {
                                 "(untitled)".into()
@@ -333,6 +446,8 @@ impl NotesSyncEngine {
                             modified_ts,
                             deleted: is_deleted,
                             change_tag,
+                            body_markdown: cached_body,
+                            search_text: cached_search_text,
                         };
                         self.cache.notes.insert(record_name.to_string(), nd);
                         self.cache.ds.item_changed(record_name.to_string());
@@ -351,4 +466,32 @@ fn field_b64_text(fields: &serde_json::Map<String, Value>, key: &str) -> String 
         .and_then(|v| v.as_str())
         .unwrap_or("");
     proto::decode_b64_text(b64)
+}
+
+pub(crate) fn decode_search_text(b64: &str) -> String {
+    if b64.is_empty() {
+        return String::new();
+    }
+
+    match proto::decode_note_body(b64) {
+        Ok(document) => document.text.replace('\u{fffc}', " ").trim().to_string(),
+        Err(_) => proto::decode_b64_text(b64),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_search_text;
+    use crate::notes::models::NoteDocument;
+    use crate::notes::proto::encode_note_body;
+
+    #[test]
+    fn decodes_note_body_into_search_text() {
+        let body = encode_note_body(&NoteDocument {
+            text: "alpha\nbeta\n".into(),
+            runs: vec![],
+        })
+        .unwrap();
+        assert_eq!(decode_search_text(&body), "alpha\nbeta");
+    }
 }

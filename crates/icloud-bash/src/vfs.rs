@@ -4,20 +4,20 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use icloud_api::hme::HideMyEmailClient;
+use bashbox::fs::types::{CpOptions, DirentEntry, FsError, FsStat, MkdirOptions, RmOptions};
+use bashbox::fs::FileSystem;
+use bashbox::InMemoryFs;
+use icloud_api::hme::{HideMyEmailClient, HmeAlias};
 use icloud_api::notes::NotesSyncEngine;
 use icloud_api::reminders::models::priority_label;
 use icloud_api::reminders::SyncEngine;
 use icloud_api::title_doc::ts_to_str;
 use icloud_api::{with_notes_retry, with_reminders_retry};
-use bashbox::fs::types::{CpOptions, DirentEntry, FsError, FsStat, MkdirOptions, RmOptions};
-use bashbox::fs::FileSystem;
-use bashbox::InMemoryFs;
 use tokio::sync::Mutex;
 
 use crate::frontmatter::{
-    parse_reminder_write_input, render_note, render_reminder, strip_frontmatter, NoteFrontmatter,
-    ReminderFrontmatter,
+    parse_reminder_write_input, render_hme, render_note, render_reminder, strip_frontmatter,
+    HmeFrontmatter, NoteFrontmatter, ReminderFrontmatter,
 };
 use crate::pathmap::{classify, is_icloud_prefix, normalize_vpath, VfsTarget};
 use crate::sanitize::{disambiguate_filename, filename_to_title, title_to_filename_stem};
@@ -104,6 +104,70 @@ fn resolve_note_id(eng: &NotesSyncEngine, folder: &str, filename: &str) -> Optio
         .or_else(|| eng.cache.find_note(&title_guess))
 }
 
+/// One HME alias with the VFS filename we assigned it.
+#[derive(Debug, Clone)]
+struct HmeEntry {
+    filename: String,
+    alias: HmeAlias,
+}
+
+/// Assign a collision-free `<label>.md` filename to each alias, falling back
+/// to the email local-part when the label is empty.
+fn build_hme_entries(aliases: Vec<HmeAlias>) -> Vec<HmeEntry> {
+    let mut existing = HashSet::with_capacity(aliases.len());
+    aliases
+        .into_iter()
+        .map(|alias| {
+            let base = if alias.label.trim().is_empty() {
+                alias
+                    .hme
+                    .split('@')
+                    .next()
+                    .unwrap_or("alias")
+                    .to_string()
+            } else {
+                alias.label.clone()
+            };
+            let stem = title_to_filename_stem(&base);
+            let filename = disambiguate_filename(&stem, &existing);
+            existing.insert(filename.to_ascii_lowercase());
+            HmeEntry { filename, alias }
+        })
+        .collect()
+}
+
+fn render_hme_markdown(alias: &HmeAlias) -> String {
+    let fm = HmeFrontmatter {
+        email: alias.hme.clone(),
+        label: alias.label.clone(),
+        anonymous_id: alias.anonymous_id.clone(),
+        forward_to: alias.forward_to_email.clone(),
+        active: alias.is_active,
+        origin: alias.origin.clone(),
+        created: alias.create_timestamp.and_then(|ms| {
+            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+                .map(|dt| dt.to_rfc3339())
+        }),
+    };
+    // Body: heading + free-form note + a plain-text email line that makes
+    // the alias grep-/search-friendly even without reading frontmatter.
+    let mut body = String::new();
+    body.push_str("# ");
+    if alias.label.is_empty() {
+        body.push_str(&alias.hme);
+    } else {
+        body.push_str(&alias.label);
+    }
+    body.push_str("\n\n");
+    body.push_str(&alias.hme);
+    body.push_str("\n\n");
+    if !alias.note.trim().is_empty() {
+        body.push_str(alias.note.trim());
+        body.push('\n');
+    }
+    render_hme(&fm, &body)
+}
+
 fn resolve_reminder_id(eng: &SyncEngine, list: &str, filename: &str) -> Option<String> {
     let title_guess = filename_to_title(filename);
     reminder_entries(eng, list)
@@ -117,13 +181,33 @@ fn is_icloud_path(path: &str) -> bool {
     is_icloud_prefix(&normalize_vpath(path))
 }
 
+fn fixed_stat(is_dir: bool) -> FsStat {
+    FsStat {
+        is_file: !is_dir,
+        is_directory: is_dir,
+        is_symlink: false,
+        mode: if is_dir { 0o755 } else { 0o644 },
+        size: 0,
+        mtime: std::time::SystemTime::UNIX_EPOCH,
+    }
+}
+
+/// Cached HME data — we want both the raw JSON (for `/HideMyEmail/aliases.json`)
+/// and the parsed + disambiguated entries (for per-alias markdown files, stat,
+/// and readdir listings) in lockstep.
+#[derive(Default)]
+struct HmeCache {
+    raw_json: Option<String>,
+    entries: Option<Vec<HmeEntry>>,
+}
+
 /// Virtual filesystem: iCloud-backed subtrees + [`InMemoryFs`] for `/bin`, `/tmp`, etc.
 pub struct ICloudFs {
     inner: Arc<InMemoryFs>,
     notes: Arc<Mutex<NotesSyncEngine>>,
     reminders: Arc<Mutex<SyncEngine>>,
     hme: Arc<HideMyEmailClient>,
-    aliases_cache: Arc<Mutex<Option<String>>>,
+    hme_cache: Arc<Mutex<HmeCache>>,
 }
 
 impl ICloudFs {
@@ -138,7 +222,77 @@ impl ICloudFs {
             notes,
             reminders,
             hme,
-            aliases_cache: Arc::new(Mutex::new(None)),
+            hme_cache: Arc::new(Mutex::new(HmeCache::default())),
+        }
+    }
+
+    /// Fetch + cache HME aliases (raw JSON and parsed entries). Network hit
+    /// happens only on the first call; subsequent calls reuse the cached copy.
+    async fn load_hme_cache(&self, path: &str) -> Result<(), FsError> {
+        let mut cache = self.hme_cache.lock().await;
+        if cache.raw_json.is_some() && cache.entries.is_some() {
+            return Ok(());
+        }
+        let v = self
+            .hme
+            .list_aliases()
+            .await
+            .map_err(|e| map_api_err(path, "read", e))?;
+        let aliases = HmeAlias::parse_list_response(&v);
+        cache.raw_json =
+            Some(serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string()));
+        cache.entries = Some(build_hme_entries(aliases));
+        Ok(())
+    }
+
+    async fn hme_raw_json(&self, path: &str) -> Result<String, FsError> {
+        self.load_hme_cache(path).await?;
+        let cache = self.hme_cache.lock().await;
+        Ok(cache.raw_json.clone().unwrap_or_default())
+    }
+
+    async fn hme_entries(&self, path: &str) -> Result<Vec<HmeEntry>, FsError> {
+        self.load_hme_cache(path).await?;
+        let cache = self.hme_cache.lock().await;
+        Ok(cache.entries.clone().unwrap_or_default())
+    }
+
+    async fn read_hme_file(&self, path: &str, filename: &str) -> Result<String, FsError> {
+        let entries = self.hme_entries(path).await?;
+        entries
+            .into_iter()
+            .find(|e| e.filename == filename)
+            .map(|e| render_hme_markdown(&e.alias))
+            .ok_or_else(|| FsError::NotFound {
+                path: path.to_string(),
+                operation: "open".to_string(),
+            })
+    }
+
+    /// Drop the cached body + search text for the note at `path` so the
+    /// next `read_file` goes back to CloudKit for a fresh copy.
+    ///
+    /// Called around `edit`: once before opening the editor (so we never
+    /// show the user a stale view of a note that was touched on another
+    /// device) and once after writing (so the next read observes whatever
+    /// Apple Notes normalized our update to, not just what we optimistically
+    /// stored locally).
+    pub async fn invalidate_note_body_at(&self, path: &str) {
+        let n = normalize_vpath(path);
+        let Ok(VfsTarget::NotesFile {
+            folder_name,
+            filename,
+        }) = classify(&n)
+        else {
+            return;
+        };
+        let mut eng = self.notes.lock().await;
+        let Some(note_id) = resolve_note_id(&eng, &folder_name, &filename) else {
+            return;
+        };
+        if let Some(nd) = eng.cache.notes.get_mut(&note_id) {
+            nd.body_markdown = None;
+            nd.search_text = None;
         }
     }
 
@@ -244,6 +398,18 @@ impl ICloudFs {
                 }
             }
         }
+
+        // HME alias markdown files — only surfaced if we've already fetched
+        // them (read_file / readdir warms the cache). Avoid triggering a
+        // network hit from glob expansion.
+        {
+            let cache = self.hme_cache.lock().await;
+            if let Some(entries) = cache.entries.as_ref() {
+                for entry in entries {
+                    paths.push(format!("/HideMyEmail/{}", entry.filename));
+                }
+            }
+        }
     }
 }
 
@@ -258,18 +424,9 @@ impl FileSystem for ICloudFs {
             path: path.to_string(),
             operation: "open".to_string(),
         })? {
-            VfsTarget::HideMyEmailAliases => {
-                let mut cache = self.aliases_cache.lock().await;
-                if cache.is_none() {
-                    let v = self
-                        .hme
-                        .list_aliases()
-                        .await
-                        .map_err(|e| map_api_err(path, "read", e))?;
-                    *cache =
-                        Some(serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string()));
-                }
-                Ok(cache.as_ref().unwrap().clone())
+            VfsTarget::HideMyEmailAliases => self.hme_raw_json(path).await,
+            VfsTarget::HideMyEmailFile { filename } => {
+                self.read_hme_file(path, &filename).await
             }
             VfsTarget::NotesFile {
                 folder_name,
@@ -315,8 +472,6 @@ impl FileSystem for ICloudFs {
             });
         }
         let n = normalize_vpath(path);
-        let text = String::from_utf8(content.to_vec())
-            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
         match classify(&n).map_err(|_| FsError::InvalidArgument {
             path: path.to_string(),
             operation: "write".to_string(),
@@ -325,6 +480,12 @@ impl FileSystem for ICloudFs {
                 folder_name,
                 filename,
             } => {
+                let text = std::str::from_utf8(content)
+                    .map_err(|_| FsError::InvalidArgument {
+                        path: path.to_string(),
+                        operation: "write".to_string(),
+                    })?
+                    .to_string();
                 let (body, _) = strip_frontmatter(&text);
                 let title_from_file = filename_to_title(&filename);
                 let md = if body
@@ -372,6 +533,12 @@ impl FileSystem for ICloudFs {
                 list_name,
                 filename,
             } => {
+                let text = std::str::from_utf8(content)
+                    .map_err(|_| FsError::InvalidArgument {
+                        path: path.to_string(),
+                        operation: "write".to_string(),
+                    })?
+                    .to_string();
                 let (fields, body) =
                     parse_reminder_write_input(&text).map_err(|e| FsError::Other { message: e })?;
                 let title = {
@@ -476,6 +643,7 @@ impl FileSystem for ICloudFs {
             }),
             VfsTarget::HideMyEmailRoot
             | VfsTarget::HideMyEmailAliases
+            | VfsTarget::HideMyEmailFile { .. }
             | VfsTarget::AttachmentsRoot
             | VfsTarget::AttachmentsFile { .. } => Err(FsError::ReadOnly {
                 operation: "write".to_string(),
@@ -513,29 +681,84 @@ impl FileSystem for ICloudFs {
             path: path.to_string(),
             operation: "stat".to_string(),
         })?;
-        let is_dir = matches!(
-            target,
+        match target {
             VfsTarget::Root
-                | VfsTarget::NotesRoot
-                | VfsTarget::NotesFolder { .. }
-                | VfsTarget::RemindersRoot
-                | VfsTarget::RemindersList { .. }
-                | VfsTarget::HideMyEmailRoot
-                | VfsTarget::AttachmentsRoot
-        );
-        // Return size 0 for all iCloud targets — avoids fetching every note/reminder
-        // body over the network just to report content length (catastrophic for 10K+ items).
-        if matches!(target, VfsTarget::Passthrough) {
-            unreachable!();
+            | VfsTarget::NotesRoot
+            | VfsTarget::RemindersRoot
+            | VfsTarget::HideMyEmailRoot
+            | VfsTarget::AttachmentsRoot => Ok(fixed_stat(true)),
+            VfsTarget::HideMyEmailAliases => Ok(fixed_stat(false)),
+            VfsTarget::HideMyEmailFile { filename } => {
+                let entries = self.hme_entries(path).await?;
+                if entries.iter().any(|e| e.filename == filename) {
+                    Ok(fixed_stat(false))
+                } else {
+                    Err(FsError::NotFound {
+                        path: path.to_string(),
+                        operation: "stat".to_string(),
+                    })
+                }
+            }
+            VfsTarget::NotesFolder { folder_name } => {
+                let eng = self.notes.lock().await;
+                if eng.cache.find_folder_by_name(&folder_name).is_some() {
+                    Ok(fixed_stat(true))
+                } else {
+                    Err(FsError::NotFound {
+                        path: path.to_string(),
+                        operation: "stat".to_string(),
+                    })
+                }
+            }
+            VfsTarget::NotesFile {
+                folder_name,
+                filename,
+            } => {
+                let eng = self.notes.lock().await;
+                if eng.cache.find_folder_by_name(&folder_name).is_none()
+                    || resolve_note_id(&eng, &folder_name, &filename).is_none()
+                {
+                    Err(FsError::NotFound {
+                        path: path.to_string(),
+                        operation: "stat".to_string(),
+                    })
+                } else {
+                    Ok(fixed_stat(false))
+                }
+            }
+            VfsTarget::RemindersList { list_name } => {
+                let eng = self.reminders.lock().await;
+                if eng.cache.find_list_by_name(&list_name).is_some() {
+                    Ok(fixed_stat(true))
+                } else {
+                    Err(FsError::NotFound {
+                        path: path.to_string(),
+                        operation: "stat".to_string(),
+                    })
+                }
+            }
+            VfsTarget::RemindersFile {
+                list_name,
+                filename,
+            } => {
+                let eng = self.reminders.lock().await;
+                if eng.cache.find_list_by_name(&list_name).is_none()
+                    || resolve_reminder_id(&eng, &list_name, &filename).is_none()
+                {
+                    Err(FsError::NotFound {
+                        path: path.to_string(),
+                        operation: "stat".to_string(),
+                    })
+                } else {
+                    Ok(fixed_stat(false))
+                }
+            }
+            VfsTarget::AttachmentsFile { .. } => Err(FsError::NotFound {
+                path: path.to_string(),
+                operation: "stat".to_string(),
+            }),
+            VfsTarget::Passthrough => unreachable!(),
         }
-        Ok(FsStat {
-            is_file: !is_dir,
-            is_directory: is_dir,
-            is_symlink: false,
-            mode: if is_dir { 0o755 } else { 0o644 },
-            size: 0,
-            mtime: std::time::SystemTime::UNIX_EPOCH,
-        })
     }
 
     async fn lstat(&self, path: &str) -> Result<FsStat, FsError> {
@@ -574,11 +797,11 @@ impl FileSystem for ICloudFs {
                 path: path.to_string(),
                 operation: "mkdir".to_string(),
             }),
-            Ok(VfsTarget::HideMyEmailRoot) | Ok(VfsTarget::HideMyEmailAliases) => {
-                Err(FsError::ReadOnly {
-                    operation: "mkdir".to_string(),
-                })
-            }
+            Ok(VfsTarget::HideMyEmailRoot)
+            | Ok(VfsTarget::HideMyEmailAliases)
+            | Ok(VfsTarget::HideMyEmailFile { .. }) => Err(FsError::ReadOnly {
+                operation: "mkdir".to_string(),
+            }),
             _ => Err(FsError::InvalidArgument {
                 path: path.to_string(),
                 operation: "mkdir".to_string(),
@@ -635,7 +858,18 @@ impl FileSystem for ICloudFs {
                     .map(|entry| dent(&entry.filename, false))
                     .collect())
             }
-            VfsTarget::HideMyEmailRoot => Ok(vec![dent("aliases.json", false)]),
+            VfsTarget::HideMyEmailRoot => {
+                let mut out = vec![dent("aliases.json", false)];
+                // Best-effort: list individual aliases if the API is reachable.
+                // A failure here shouldn't kill the whole directory listing, so
+                // we fall back to just `aliases.json`.
+                if let Ok(entries) = self.hme_entries(path).await {
+                    for entry in entries {
+                        out.push(dent(&entry.filename, false));
+                    }
+                }
+                Ok(out)
+            }
             VfsTarget::AttachmentsRoot => Ok(vec![]),
             _ => Err(FsError::NotDirectory {
                 path: path.to_string(),

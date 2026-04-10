@@ -29,6 +29,12 @@ pub enum Error {
     Notes(String),
     #[error("hide my email: {0}")]
     HideMyEmail(String),
+    #[error("search: {0}")]
+    Search(String),
+    #[error("transfer: {0}")]
+    Transfer(String),
+    #[error("usage: {0}")]
+    Usage(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid url: {0}")]
@@ -73,6 +79,9 @@ impl Error {
             Error::Reminders(m) => ("reminders", m.clone()),
             Error::Notes(m) => ("notes", m.clone()),
             Error::HideMyEmail(m) => ("hide_my_email", m.clone()),
+            Error::Search(m) => ("search", m.clone()),
+            Error::Transfer(m) => ("transfer", m.clone()),
+            Error::Usage(m) => ("usage", m.clone()),
             Error::Io(e) => ("io", e.to_string()),
             Error::Url(e) => ("url", e.to_string()),
         };
