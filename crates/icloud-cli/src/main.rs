@@ -201,9 +201,12 @@ enum Command {
         /// Apple ID email address.
         #[arg(long, env = "ICLOUD_USERNAME")]
         username: Option<String>,
-        /// Apple ID password.
-        #[arg(long, env = "ICLOUD_PASSWORD")]
+        /// Apple ID password (insecure: visible in process listing — prefer --password-stdin).
+        #[arg(long, env = "ICLOUD_PASSWORD", conflicts_with = "password_stdin")]
         password: Option<String>,
+        /// Read the password from the first line of stdin (e.g. `pass show … | icloud login --password-stdin`).
+        #[arg(long)]
+        password_stdin: bool,
         /// 2FA code (skips interactive prompt).
         #[arg(long, env = "ICLOUD_2FA_CODE")]
         code: Option<String>,
@@ -503,9 +506,10 @@ async fn run(cli: Cli, out: OutputMode) -> IResult<()> {
         Command::Login {
             username,
             password,
+            password_stdin,
             code,
             sess,
-        } => handle_login(out, secrets, username, password, code, sess).await,
+        } => handle_login(out, secrets, username, password, password_stdin, code, sess).await,
         Command::Whoami { sess } => handle_whoami(out, secrets, sess).await,
         Command::Reminders(sub) => {
             cmd_reminders::handle_reminders(out, secrets, max_age, sub).await
@@ -542,19 +546,54 @@ async fn run(cli: Cli, out: OutputMode) -> IResult<()> {
 
 // ── Handlers ──────────────────────────────────────────────
 
+/// Resolve the Apple ID password from (in order): `--password-stdin`, `--password`/`ICLOUD_PASSWORD`,
+/// or an interactive TTY prompt. Plain `--password`/env emits a stderr warning since both leak
+/// (process listing / `/proc/<pid>/environ`).
+fn resolve_password(
+    password: Option<String>,
+    password_stdin: bool,
+    out: OutputMode,
+) -> IResult<String> {
+    if password_stdin {
+        let mut buf = String::new();
+        std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut buf)
+            .map_err(|e| icloud_api::Error::Auth(format!("failed to read --password-stdin: {e}")))?;
+        let pw = buf.trim_end_matches(['\r', '\n']).to_string();
+        if pw.is_empty() {
+            return Err(icloud_api::Error::Auth(
+                "--password-stdin produced an empty password".into(),
+            ));
+        }
+        return Ok(pw);
+    }
+    if let Some(pw) = password {
+        eprintln!(
+            "warning: --password / ICLOUD_PASSWORD is insecure (visible in process listing or env); prefer --password-stdin"
+        );
+        return Ok(pw);
+    }
+    if !out.no_input && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        return rpassword::prompt_password("Apple ID password: ")
+            .map_err(|e| icloud_api::Error::Auth(format!("failed to read password: {e}")));
+    }
+    Err(icloud_api::Error::Auth(
+        "missing password (use --password-stdin, --password, ICLOUD_PASSWORD, or run on a TTY)".into(),
+    ))
+}
+
 async fn handle_login(
     out: OutputMode,
     secrets: SecretsBackend,
     username: Option<String>,
     password: Option<String>,
+    password_stdin: bool,
     code: Option<String>,
     sess: SessionArg,
 ) -> IResult<()> {
     let json = out.json;
     let user = username
         .ok_or_else(|| icloud_api::Error::Auth("missing --username or ICLOUD_USERNAME".into()))?;
-    let pass = password
-        .ok_or_else(|| icloud_api::Error::Auth("missing --password or ICLOUD_PASSWORD".into()))?;
+    let pass = resolve_password(password, password_stdin, out)?;
     let session_path = sess.path();
     let mut auth = AuthFlow::new(user, pass);
     let tfa_info = auth.login_srp().await?;
