@@ -7,4 +7,5 @@ version = "0.0.1"
 "github.com/oleghq/agent-configs/plugins/simplifier" = {}
 "github.com/oleghq/agent-configs/plugins/rust-dev" = {}
 "github.com/anthropics/claude-plugins-official/plugins/code-simplifier" = {}
+"github.com/anthropics/skills/skills/skill-creator" = {}
 # "github.com/owner/repo/path" = {}

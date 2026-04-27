@@ -17,6 +17,18 @@ cache_key = "717b651d84ecf0b374db84a582794346fcb5a1298d577884bc0cf678114f53fa"
 name = ""
 
 [[packages]]
+module = "github.com/anthropics/skills/skills/skill-creator"
+direct = true
+kind = "skill"
+url = "https://github.com/anthropics/skills/tree/5128e1865d670f5d6c9cef000e6dfc4e951fb5b9/skills/skill-creator"
+owner = "anthropics"
+repo = "skills"
+path = "skills/skill-creator"
+commit = "5128e1865d670f5d6c9cef000e6dfc4e951fb5b9"
+cache_key = "4c9a5eb36bc9dcec2b90989e2a4c60b98d7576928d59f61521ab87f4c3822b5e"
+name = ""
+
+[[packages]]
 module = "github.com/oleghq/agent-configs/plugins/rust-dev"
 direct = true
 kind = "plugin"
