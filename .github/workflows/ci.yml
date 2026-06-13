@@ -20,7 +20,6 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - windows-latest
           - macos-26
           - macos-26-intel
     steps:

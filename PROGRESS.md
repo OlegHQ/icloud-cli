@@ -2,6 +2,26 @@
 
 Handoff log for cross-session work. New sessions should skim this before planning larger changes.
 
+## 2026-06-13 - Remove Windows release support
+
+Removed Windows from the supported release surface before pushing the next
+release.
+
+### Changed
+
+- Removed `windows-latest` from CI.
+- Removed the Windows MSVC target and `.zip` packaging step from the release
+  workflow.
+- Deleted the PowerShell hook installer script.
+- Updated README release/install language to state that supported release
+  targets are Linux and macOS only.
+- Bumped the workspace version to `0.1.2`.
+
+### Verified
+
+- Searched for stale Windows/PowerShell/release artifact references outside
+  transitive `Cargo.lock` package names.
+
 ## 2026-06-13 - Release plan completion and rich Notes smoke
 
 Completed the remaining release-hardening plan after the VFS scoped-resolution
@@ -354,7 +374,7 @@ Implemented the correction plan from the installed CLI smoke test.
   developer file.
 - Added root release metadata: `README.md`, `LICENSE`, `rust-toolchain.toml`,
   package repository metadata, CI workflow, tag-based release workflow, and
-  hook installer scripts for POSIX shells and PowerShell.
+  hook installer script for POSIX shells.
 - Added `.githooks/pre-push` to auto-run `cargo fmt --all` and
   `cargo clippy --fix` before `cargo test`; if fixes are applied, the hook
   stops the push so the changes can be reviewed and committed.
@@ -371,7 +391,7 @@ Implemented the correction plan from the installed CLI smoke test.
 
 ### Remaining risks
 
-- Local check-only builds for non-native x86_64 Linux, Windows GNU, and macOS
+- Local check-only builds for non-native x86_64 Linux and macOS
   targets failed because this ARM Linux host lacks the matching C
   cross-compilers/Apple SDKs needed by `ring`; the release workflow uses native
   GitHub runners instead.

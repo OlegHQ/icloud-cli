@@ -33,6 +33,8 @@ cargo test --workspace
 
 No `.envrc` or Homebrew-specific `LIBRARY_PATH` is required. The repo pins the stable Rust toolchain components in `rust-toolchain.toml`.
 
+Supported release targets are Linux and macOS. Windows builds and release artifacts are not supported.
+
 ## Quick Start
 
 Sign in and persist a reusable session:
@@ -108,12 +110,6 @@ Install the pre-push hook:
 ./scripts/install-hooks.sh
 ```
 
-On Windows PowerShell:
-
-```powershell
-./scripts/install-hooks.ps1
-```
-
 The hook runs:
 
 ```bash
@@ -134,7 +130,7 @@ cargo test --workspace --locked
 
 ## Releases
 
-Pushing a tag like `v0.1.0` runs `.github/workflows/release.yml` and publishes native archives for Linux, macOS Intel, macOS Apple Silicon, and Windows.
+Pushing a tag like `v0.1.0` runs `.github/workflows/release.yml` and publishes native archives for Linux, macOS Intel, and macOS Apple Silicon.
 
 ## Security Notes
 
