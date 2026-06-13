@@ -1,0 +1,4 @@
+interface:
+  display_name: "iCloud CLI Workflows"
+  short_description: "Recipes for non-obvious icloud CLI automation"
+  default_prompt: "Use $icloud-cli-workflows to automate an iCloud Notes, Reminders, Hide My Email, search, or VFS task safely."
