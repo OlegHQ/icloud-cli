@@ -2,6 +2,107 @@
 
 Handoff log for cross-session work. New sessions should skim this before planning larger changes.
 
+## 2026-06-13 - Release plan completion and rich Notes smoke
+
+Completed the remaining release-hardening plan after the VFS scoped-resolution
+fix, including explicit rich Markdown coverage for Apple Notes.
+
+### Changed
+
+- Refreshed `Cargo.lock` from yanked `fastrand 2.4.0` to `fastrand 2.4.1`;
+  `cargo install --locked` no longer emits the yanked-package warning.
+- Added a Notes rich Markdown/proto regression covering:
+  - headings
+  - bold, italic, bold+italic, strikethrough, underline, and links
+  - bullets and checked/unchecked checklists
+  - Apple Notes tables rendered as Markdown pipe tables
+- Added a real multi-process redb write stress test for Notes cache locking:
+  one parent process seeds a DB, then eight worker test processes write unique
+  records to the same DB and the parent verifies all writes survived.
+- Removed the stale ignored `icloud-bash` placeholder for multi-process redb
+  stress now that the real coverage lives in `icloud-api`.
+- Documented the supported Notes Markdown contract and the Apple Notes
+  Recently Deleted limitation in `README.md`.
+- Reinstalled the fixed binary with
+  `cargo install --path crates/icloud-cli --root /home/snowbear/.local --force --locked`.
+
+### Verified
+
+- `cargo fmt --all -- --check`
+- `cargo test -p icloud-api rich_markdown_proto_roundtrip_preserves_supported_formatting --locked`
+- `cargo test -p icloud-api notes_store_serializes_multi_process_writes --locked -- --nocapture`
+- `cargo test --workspace --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- Live installed-binary rich Notes smoke:
+  - created a disposable rich Markdown note through `icloud cp`
+  - read it back through VFS
+  - verified title, heading, marker body, bold, italic, bold+italic,
+    strikethrough, underline, link, bullet, checked/unchecked checklist, and
+    table body/header markers survived roundtrip
+  - rebuilt Notes search and verified the rich note path was indexed
+- Live installed-binary scoped VFS smoke after the final reinstall:
+  - missing same-title Notes path in folder B did not read folder A
+  - missing same-title Reminders path in list B did not read list A
+- Active disposable smoke Notes folders, Notes, Reminders lists, and Reminders
+  were cleaned up.
+
+### Remaining risks
+
+- Deleted Notes still remain in Apple Notes Recently Deleted by design; active
+  CLI/VFS/search/export surfaces hide them, but there is no hard-purge command.
+- Rich Notes support is limited to the documented Markdown-compatible subset.
+  Attachments, collaboration, and password-protected notes remain outside the
+  current release scope.
+- The new process stress covers cache write serialization, not live CloudKit
+  concurrent write conflicts.
+
+## 2026-06-13 - VFS scoped path resolution stop-ship fix
+
+Live smoke found and fixed a stop-ship VFS resolution bug in the installed CLI:
+same-title Notes and Reminders in different folders/lists were not isolated.
+If `/Notes/B/Title.md` or `/Reminders/B/Title.md` did not exist but `Title`
+existed elsewhere, the VFS fell back to a global title lookup and could read,
+write, or delete the wrong record while rendering misleading folder/list
+frontmatter from the requested path.
+
+### Changed
+
+- Removed the global title fallback from `resolve_note_id()` and
+  `resolve_reminder_id()` in `crates/icloud-bash/src/vfs.rs`; VFS file
+  resolution is now strictly scoped to the requested Notes folder or Reminders
+  list.
+- Added regression tests proving same-title records in another folder/list do
+  not resolve through the current VFS path.
+- Reinstalled the fixed binary with
+  `cargo install --path crates/icloud-cli --root /home/snowbear/.local --force --locked`.
+
+### Verified
+
+- Live installed-binary smoke before the fix reproduced:
+  - missing `/Notes/<folder B>/<title>.md` read the note from folder A
+  - writing that path updated folder A instead of creating in folder B
+  - `rm` of that missing folder B path deleted/moved the folder A note
+  - the same read/write/delete scope break existed for Reminders lists
+- `cargo fmt --all -- --check`
+- `cargo test -p icloud-bash --locked`
+- `cargo test --workspace --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- Live fixed-binary smoke against `target/debug/icloud`:
+  - missing same-title paths now return not found
+  - same-title writes create/update only the requested folder/list
+  - `rm` in folder/list B no longer deletes the same-title item in folder/list A
+- Live installed-binary smoke repeated the same scoped read/write/delete checks
+  successfully after reinstall.
+
+### Remaining risks
+
+- Apple Notes still keeps deleted smoke Notes in Recently Deleted; normal
+  CLI/VFS listing hides them, but there is no hard-purge command.
+- `Cargo.lock` still contains yanked `fastrand 2.4.0`; locked builds/install
+  succeed, but dependency refresh remains release hygiene.
+- Multi-process stress coverage is still represented by an ignored placeholder;
+  the smoke tested parallel read commands, not heavier concurrent writes.
+
 ## 2026-06-13 - Reminders VFS body-only write fix release
 
 Fixed the release blocker found in the installed CLI re-smoke: existing

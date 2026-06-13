@@ -87,6 +87,19 @@ Secrets backends:
 
 `/tmp` is in-memory per shell session. Notes and Reminders files are Markdown with YAML frontmatter where needed.
 
+### Notes Markdown Contract
+
+Notes bodies are exchanged as Markdown. The current codec is intended to round-trip the supported Apple Notes features that map cleanly to Markdown:
+
+- headings and the first `# Title` line
+- bold, italic, bold+italic, strikethrough, underline, and links
+- bullet lists and checklists
+- Apple Notes tables represented as Markdown pipe tables
+
+Attachments are read as `/Attachments/<id>.<ext>` references where metadata is available, but attachment mutation is not a v1 feature. Rich Apple Notes features without a stable Markdown representation, including collaboration metadata and password-protected notes, are outside the current release scope.
+
+`icloud notes delete` and folder deletion follow Apple Notes semantics: notes are moved to Recently Deleted. Active CLI, VFS, search, and export surfaces hide those trashed records, but the CLI does not currently hard-purge Recently Deleted items.
+
 ## Development
 
 Install the pre-push hook:

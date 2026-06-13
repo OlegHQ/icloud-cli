@@ -104,12 +104,10 @@ fn reminder_entries(eng: &SyncEngine, list_name: &str) -> Vec<DisambiguatedEntry
 }
 
 fn resolve_note_id(eng: &NotesSyncEngine, folder: &str, filename: &str) -> Option<String> {
-    let title_guess = filename_to_title(filename);
     note_entries(eng, folder)
         .into_iter()
         .find(|entry| entry.filename == filename)
         .map(|entry| entry.id)
-        .or_else(|| eng.cache.find_note(&title_guess))
 }
 
 /// One HME alias with the VFS filename we assigned it.
@@ -171,12 +169,10 @@ fn render_hme_markdown(alias: &HmeAlias) -> String {
 }
 
 fn resolve_reminder_id(eng: &SyncEngine, list: &str, filename: &str) -> Option<String> {
-    let title_guess = filename_to_title(filename);
     reminder_entries(eng, list)
         .into_iter()
         .find(|entry| entry.filename == filename)
         .map(|entry| entry.id)
-        .or_else(|| eng.cache.find_reminder(&title_guess))
 }
 
 fn reminder_title_from_body(body: &str, filename: &str) -> (String, bool) {
@@ -1264,6 +1260,42 @@ fn dent(name: &str, is_dir: bool) -> DirentEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use icloud_api::{
+        notes::{NoteData, NotesCache},
+        reminders::{ReminderData, RemindersCache},
+        CloudKitClient, SessionData,
+    };
+
+    fn dummy_session() -> SessionData {
+        SessionData {
+            ck_base_url: "https://example.invalid/".to_string(),
+            session_token: None,
+            trust_token: None,
+            account_country: None,
+            session_id: None,
+            scnt: None,
+            dsid: None,
+            cookies: Vec::new(),
+            created_at: None,
+            webservices: None,
+            client_id: None,
+            apple_id: None,
+        }
+    }
+
+    fn dummy_notes_engine(cache: NotesCache) -> NotesSyncEngine {
+        NotesSyncEngine::new(
+            CloudKitClient::notes(dummy_session()).expect("dummy notes client"),
+            cache,
+        )
+    }
+
+    fn dummy_reminders_engine(cache: RemindersCache) -> SyncEngine {
+        SyncEngine::new(
+            CloudKitClient::reminders(dummy_session()).expect("dummy reminders client"),
+            cache,
+        )
+    }
 
     #[test]
     fn reminder_body_only_write_requests_title_update() {
@@ -1297,5 +1329,57 @@ mod tests {
         assert_eq!(title, "collision (2)");
         assert_eq!(title_update, None);
         assert!(reminder_write_needs_edit(&fields, title_update));
+    }
+
+    #[test]
+    fn resolve_note_id_stays_scoped_to_folder() {
+        let mut cache = NotesCache::default();
+        cache
+            .folders
+            .insert("folder-a-id".to_string(), "Folder A".to_string());
+        cache
+            .folders
+            .insert("folder-b-id".to_string(), "Folder B".to_string());
+        cache.notes.insert(
+            "note-a".to_string(),
+            NoteData {
+                title: "Same Title".to_string(),
+                folder_ref: Some("folder-a-id".to_string()),
+                ..Default::default()
+            },
+        );
+        let eng = dummy_notes_engine(cache);
+
+        assert_eq!(
+            resolve_note_id(&eng, "Folder A", "Same Title.md").as_deref(),
+            Some("note-a")
+        );
+        assert_eq!(resolve_note_id(&eng, "Folder B", "Same Title.md"), None);
+    }
+
+    #[test]
+    fn resolve_reminder_id_stays_scoped_to_list() {
+        let mut cache = RemindersCache::default();
+        cache
+            .lists
+            .insert("list-a-id".to_string(), "List A".to_string());
+        cache
+            .lists
+            .insert("list-b-id".to_string(), "List B".to_string());
+        cache.reminders.insert(
+            "reminder-a".to_string(),
+            ReminderData {
+                title: "Same Title".to_string(),
+                list_ref: Some("list-a-id".to_string()),
+                ..Default::default()
+            },
+        );
+        let eng = dummy_reminders_engine(cache);
+
+        assert_eq!(
+            resolve_reminder_id(&eng, "List A", "Same Title.md").as_deref(),
+            Some("reminder-a")
+        );
+        assert_eq!(resolve_reminder_id(&eng, "List B", "Same Title.md"), None);
     }
 }

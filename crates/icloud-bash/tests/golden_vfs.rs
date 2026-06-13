@@ -71,7 +71,3 @@ fn filename_stem_collision_matches_disambiguation() {
     assert!(second.contains("(2)"), "got {second}");
     assert_eq!(filename_to_title(&second), "Dup (2)");
 }
-
-#[tokio::test]
-#[ignore = "Multi-process redb stress belongs in icloud-api; run when tooling allows"]
-async fn ignored_placeholder_multi_process_redb() {}

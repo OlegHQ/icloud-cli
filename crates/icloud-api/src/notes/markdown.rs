@@ -1451,6 +1451,116 @@ mod tests {
     }
 
     #[test]
+    fn rich_markdown_proto_roundtrip_preserves_supported_formatting() {
+        let original_md = "\
+# Rich Contract
+
+## Section
+
+**bold** and *italic* and ***both*** and ~~strike~~ and <u>under</u> and [link](https://example.com)
+
+- Bullet item
+- [x] Done item
+- [ ] Todo item
+
+| Name | Value |
+| --- | --- |
+| alpha | 1 |
+";
+        let parsed = from_markdown(original_md).unwrap();
+
+        assert!(
+            parsed.doc.runs.iter().any(|run| run.font.bold),
+            "missing bold run: {:#?}",
+            parsed.doc.runs
+        );
+        assert!(
+            parsed.doc.runs.iter().any(|run| run.font.italic),
+            "missing italic run: {:#?}",
+            parsed.doc.runs
+        );
+        assert!(
+            parsed.doc.runs.iter().any(|run| run.strikethrough),
+            "missing strikethrough run: {:#?}",
+            parsed.doc.runs
+        );
+        assert!(
+            parsed.doc.runs.iter().any(|run| run.underlined),
+            "missing underline run: {:#?}",
+            parsed.doc.runs
+        );
+        assert!(
+            parsed
+                .doc
+                .runs
+                .iter()
+                .any(|run| run.link.as_deref() == Some("https://example.com")),
+            "missing link run: {:#?}",
+            parsed.doc.runs
+        );
+        assert!(
+            parsed
+                .doc
+                .runs
+                .iter()
+                .any(|run| run.style.style_type == StyleType::BulletList),
+            "missing bullet run: {:#?}",
+            parsed.doc.runs
+        );
+        let checklist_runs: Vec<_> = parsed
+            .doc
+            .runs
+            .iter()
+            .filter(|run| run.style.style_type == StyleType::Checklist)
+            .collect();
+        assert_eq!(checklist_runs.len(), 2, "wrong checklist count");
+        assert!(checklist_runs[0].style.checklist.as_ref().unwrap().done);
+        assert!(!checklist_runs[1].style.checklist.as_ref().unwrap().done);
+        assert_eq!(parsed.tables.len(), 1, "table attachment was not parsed");
+
+        let b64 = crate::notes::proto::encode_note_body(&parsed.doc).unwrap();
+        let decoded = crate::notes::proto::decode_note_body(&b64).unwrap();
+        let rendered = to_markdown_with_attachments(
+            &decoded,
+            &HashMap::from([(
+                parsed
+                    .doc
+                    .runs
+                    .iter()
+                    .find_map(|run| {
+                        run.attachment
+                            .as_ref()
+                            .map(|attachment| attachment.identifier.clone())
+                    })
+                    .expect("table attachment id"),
+                AttachmentContent::Table(parsed.tables[0].clone()),
+            )]),
+            None::<&dyn Fn(&str) -> Option<String>>,
+        );
+
+        for expected in [
+            "# Rich Contract",
+            "## Section",
+            "**bold**",
+            "*italic*",
+            "***both***",
+            "~~strike~~",
+            "<u>under</u>",
+            "[link](https://example.com)",
+            "- Bullet item",
+            "- [x] Done item",
+            "- [ ] Todo item",
+            "| Name",
+            "| alpha",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected:?}: {rendered}"
+            );
+        }
+    }
+
+    #[test]
     fn blank_line_after_checklist_does_not_extend_checklist_run() {
         // Regression: a trailing blank line was being folded into the
         // previous Checklist run, so Apple Notes rendered a spurious empty
