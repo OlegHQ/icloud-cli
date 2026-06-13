@@ -27,18 +27,31 @@ impl From<SearchServiceArg> for SearchService {
     }
 }
 
+pub(crate) struct SearchRequest {
+    pub(crate) args: IcloudFsArgs,
+    pub(crate) query: String,
+    pub(crate) service: Option<SearchServiceArg>,
+    pub(crate) paths: Vec<String>,
+    pub(crate) limit: usize,
+    pub(crate) rebuild: bool,
+    pub(crate) index: Option<PathBuf>,
+}
+
 pub(crate) async fn run_search(
     out: OutputMode,
     secrets: SecretsBackend,
     max_age: u64,
-    args: IcloudFsArgs,
-    query: String,
-    service: Option<SearchServiceArg>,
-    paths: Vec<String>,
-    limit: usize,
-    rebuild: bool,
-    index: Option<PathBuf>,
+    request: SearchRequest,
 ) -> icloud_api::Result<()> {
+    let SearchRequest {
+        args,
+        query,
+        service,
+        paths,
+        limit,
+        rebuild,
+        index,
+    } = request;
     let session_path = args.session_path();
     let notes_db = args.notes_db_path();
     let reminders_db = args.reminders_db_path();
@@ -199,11 +212,20 @@ fn requested_services(
 
     if let Some(explicit) = explicit {
         let service: SearchService = explicit.into();
-        let conflicts = scope_services.iter().any(|scope| match (service, scope) {
-            (SearchService::Notes, ScopeService::Reminders | ScopeService::HideMyEmail) => true,
-            (SearchService::Reminders, ScopeService::Notes | ScopeService::HideMyEmail) => true,
-            (SearchService::HideMyEmail, ScopeService::Notes | ScopeService::Reminders) => true,
-            _ => false,
+        let conflicts = scope_services.iter().any(|scope| {
+            matches!(
+                (service, scope),
+                (
+                    SearchService::Notes,
+                    ScopeService::Reminders | ScopeService::HideMyEmail
+                ) | (
+                    SearchService::Reminders,
+                    ScopeService::Notes | ScopeService::HideMyEmail
+                ) | (
+                    SearchService::HideMyEmail,
+                    ScopeService::Notes | ScopeService::Reminders
+                )
+            )
         });
         if conflicts {
             return Err(icloud_api::Error::Usage(format!(
@@ -269,10 +291,7 @@ mod tests {
 
     #[test]
     fn accepts_hide_my_email_scope() {
-        assert_eq!(
-            normalize_scope("/HideMyEmail").unwrap(),
-            "/HideMyEmail"
-        );
+        assert_eq!(normalize_scope("/HideMyEmail").unwrap(), "/HideMyEmail");
         assert_eq!(
             requested_services(None, &[String::from("/HideMyEmail")]).unwrap(),
             vec![SearchService::HideMyEmail]

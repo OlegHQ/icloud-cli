@@ -1,4 +1,8 @@
 //! Centralized output formatting for human, JSON, plain (tab-separated), and quiet modes.
+//!
+//! Stream contract:
+//!   stdout — command results, JSON payloads, success confirmations.
+//!   stderr — diagnostics, progress, prompts, hints, dry-run previews.
 
 use icloud_api::notes::models::{Note as NoteModel, NoteFolder};
 use icloud_api::reminders::{models::priority_label, Reminder, ReminderList};
@@ -276,8 +280,13 @@ pub fn print_search_hits_mode(mode: OutputMode, hits: &[SearchHit]) {
 
 // ── Session / Whoami ───────────────────────────────────────
 
-pub fn print_whoami(json: bool, session_path: &std::path::Path, session: &SessionData, ok: bool) {
-    if json {
+pub fn print_whoami(
+    mode: OutputMode,
+    session_path: &std::path::Path,
+    session: &SessionData,
+    ok: bool,
+) {
+    if mode.json {
         print_json(&serde_json::json!({
             "session": session_path,
             "validates": ok,
@@ -291,6 +300,14 @@ pub fn print_whoami(json: bool, session_path: &std::path::Path, session: &Sessio
     let dsid = session.dsid.as_deref().unwrap_or("-");
     let apple_id = session.apple_id.as_deref().unwrap_or("-");
     let path_str = session_path.display().to_string();
+    if mode.quiet {
+        println!("{status}");
+        return;
+    }
+    if mode.plain {
+        println!("{path_str}\t{apple_id}\t{status}\t{dsid}");
+        return;
+    }
     print_kv(&[
         ("Session", &path_str),
         ("Apple ID", apple_id),
@@ -316,10 +333,61 @@ pub fn print_hme_action(json: bool, action: &str, ok: bool) {
     if json {
         print_json_compact(&serde_json::json!({ "ok": ok }));
     } else if ok {
-        eprintln!("{action}: ok");
+        println!("{action}: ok");
     } else {
         eprintln!("{action}: failed");
     }
+}
+
+pub fn print_hme_list_mode(mode: OutputMode, raw: &serde_json::Value) {
+    if mode.json {
+        print_json(raw);
+        return;
+    }
+    let aliases = icloud_api::hme::HmeAlias::parse_list_response(raw);
+    if mode.quiet {
+        println!("{}", aliases.len());
+        return;
+    }
+    if mode.plain {
+        for a in &aliases {
+            let active = match a.is_active {
+                Some(true) => "active",
+                Some(false) => "inactive",
+                None => "",
+            };
+            let forward = a.forward_to_email.as_deref().unwrap_or("");
+            let origin = a.origin.as_deref().unwrap_or("");
+            let created = a
+                .create_timestamp
+                .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default();
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                a.anonymous_id, a.hme, a.label, forward, active, origin, created
+            );
+        }
+        return;
+    }
+    let rows: Vec<Vec<String>> = aliases
+        .iter()
+        .map(|a| {
+            let active = match a.is_active {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "?",
+            };
+            vec![
+                a.label.clone(),
+                a.hme.clone(),
+                a.forward_to_email.clone().unwrap_or_default(),
+                active.to_string(),
+                a.anonymous_id.clone(),
+            ]
+        })
+        .collect();
+    print_table_mode(&["LABEL", "EMAIL", "FORWARD", "ACTIVE", "ID"], &rows, mode);
 }
 
 // ── Mutation confirmations ─────────────────────────────────
@@ -328,7 +396,7 @@ pub fn print_ok(json: bool, msg: &str) {
     if json {
         print_json_compact(&serde_json::json!({ "ok": true }));
     } else {
-        eprintln!("{msg}");
+        println!("{msg}");
     }
 }
 
@@ -340,6 +408,6 @@ pub fn print_ok_with(json: bool, msg: &str, extra: &serde_json::Value) {
         }
         print_json_compact(&obj);
     } else {
-        eprintln!("{msg}");
+        println!("{msg}");
     }
 }

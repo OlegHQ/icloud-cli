@@ -2,8 +2,8 @@
 references/vendor
 **/*.rs.bk
 .env
+.envrc
 *.session
 .DS_Store
 .claude
 .cursor
-

@@ -1,6 +1,6 @@
 use clap::Subcommand;
 use icloud_api::session::SecretsBackend;
-use icloud_api::Result as IResult;
+use icloud_api::{with_reminders_retry, Result as IResult};
 
 use crate::output::{self, hint, print_ok, print_ok_with, OutputMode};
 use crate::{resolve_date_filter, resolve_due_date, OpenReminders, RemindersArgs};
@@ -74,7 +74,7 @@ pub(crate) enum RemindersCmd {
         /// Reminder title (alternative to positional).
         #[arg(short = 't', long = "title", conflicts_with = "title")]
         title_flag: Option<String>,
-        /// Due date: today, tomorrow, YYYY-MM-DD, or YYYY-MM-DD HH:mm.
+        /// Due date: today, tomorrow, yesterday, or YYYY-MM-DD.
         #[arg(short = 'd', long)]
         due: Option<String>,
         /// Priority: high, medium, low, none.
@@ -134,7 +134,7 @@ pub(crate) enum RemindersCmd {
         /// New title.
         #[arg(short = 't', long)]
         title: Option<String>,
-        /// New due date (YYYY-MM-DD).
+        /// New due date: today, tomorrow, yesterday, or YYYY-MM-DD.
         #[arg(short = 'd', long)]
         due: Option<String>,
         /// Clear the due date.
@@ -296,12 +296,17 @@ pub(crate) async fn handle_reminders(
 
             if let Some(ref list_name) = name {
                 if let Some(ref new_name) = rename {
-                    // Rename list
-                    r.engine.rename_list(list_name, new_name).await?;
+                    let ln = list_name.clone();
+                    let nn = new_name.clone();
+                    with_reminders_retry(&mut r.engine, |e| {
+                        let ln = ln.clone();
+                        let nn = nn.clone();
+                        Box::pin(async move { e.rename_list(&ln, &nn).await })
+                    })
+                    .await?;
                     r.save()?;
                     print_ok(json, &format!("Renamed '{list_name}' to '{new_name}'"));
                 } else if delete {
-                    // Delete list
                     if !force && !out.no_input && !json {
                         eprint!("Delete list '{list_name}' and all its reminders? [y/N] ");
                         let mut input = String::new();
@@ -313,12 +318,21 @@ pub(crate) async fn handle_reminders(
                             return Ok(());
                         }
                     }
-                    r.engine.delete_list(list_name).await?;
+                    let ln = list_name.clone();
+                    with_reminders_retry(&mut r.engine, |e| {
+                        let ln = ln.clone();
+                        Box::pin(async move { e.delete_list(&ln).await })
+                    })
+                    .await?;
                     r.save()?;
                     print_ok(json, &format!("Deleted list '{list_name}'"));
                 } else if create {
-                    // Create list
-                    r.engine.create_list(list_name).await?;
+                    let ln = list_name.clone();
+                    with_reminders_retry(&mut r.engine, |e| {
+                        let ln = ln.clone();
+                        Box::pin(async move { e.create_list(&ln).await })
+                    })
+                    .await?;
                     r.save()?;
                     print_ok(json, &format!("Created list '{list_name}'"));
                 } else {
@@ -364,18 +378,37 @@ pub(crate) async fn handle_reminders(
             )
             .await?;
             let t = resolved_title.clone();
-            r.engine
-                .add_reminder(
-                    &resolved_title,
-                    &list,
-                    resolved_due.as_deref(),
-                    priority.as_deref(),
-                    notes.as_deref(),
-                    parent.as_deref(),
-                )
-                .await?;
+            let list_for_op = list.clone();
+            let due_arg = resolved_due.clone();
+            let pri_arg = priority.clone();
+            let notes_arg = notes.clone();
+            let parent_arg = parent.clone();
+            let id = with_reminders_retry(&mut r.engine, |e| {
+                let title = resolved_title.clone();
+                let list = list_for_op.clone();
+                let due = due_arg.clone();
+                let pri = pri_arg.clone();
+                let notes = notes_arg.clone();
+                let parent = parent_arg.clone();
+                Box::pin(async move {
+                    e.add_reminder(
+                        &title,
+                        &list,
+                        due.as_deref(),
+                        pri.as_deref(),
+                        notes.as_deref(),
+                        parent.as_deref(),
+                    )
+                    .await
+                })
+            })
+            .await?;
             r.save()?;
-            print_ok(json, &format!("Added: {t}"));
+            print_ok_with(
+                json,
+                &format!("Added: {t}"),
+                &serde_json::json!({"id": id, "title": t, "list": list}),
+            );
             if out.is_human() {
                 hint(&["icloud reminders list      — see your reminders"]);
             }
@@ -397,14 +430,24 @@ pub(crate) async fn handle_reminders(
             )
             .await?;
             let count = titles.len();
-            r.engine
-                .add_reminders_batch(&titles, &list, parent.as_deref())
-                .await?;
+            let titles_arg = titles.clone();
+            let list_arg = list.clone();
+            let parent_arg = parent.clone();
+            let ids = with_reminders_retry(&mut r.engine, |e| {
+                let titles = titles_arg.clone();
+                let list = list_arg.clone();
+                let parent = parent_arg.clone();
+                Box::pin(async move {
+                    e.add_reminders_batch(&titles, &list, parent.as_deref())
+                        .await
+                })
+            })
+            .await?;
             r.save()?;
             print_ok_with(
                 json,
                 &format!("Added {count} reminders"),
-                &serde_json::json!({"count": count}),
+                &serde_json::json!({"count": count, "ids": ids}),
             );
         }
 
@@ -444,7 +487,12 @@ pub(crate) async fn handle_reminders(
             } else {
                 let count = ids.len();
                 for id in &ids {
-                    r.engine.complete_reminder(id).await?;
+                    let target = id.clone();
+                    with_reminders_retry(&mut r.engine, |e| {
+                        let id = target.clone();
+                        Box::pin(async move { e.complete_reminder(&id).await })
+                    })
+                    .await?;
                 }
                 r.save()?;
                 print_ok_with(
@@ -507,7 +555,12 @@ pub(crate) async fn handle_reminders(
                 }
                 let count = ids.len();
                 for id in &ids {
-                    r.engine.delete_reminder(id).await?;
+                    let target = id.clone();
+                    with_reminders_retry(&mut r.engine, |e| {
+                        let id = target.clone();
+                        Box::pin(async move { e.delete_reminder(&id).await })
+                    })
+                    .await?;
                 }
                 r.save()?;
                 print_ok_with(
@@ -538,30 +591,53 @@ pub(crate) async fn handle_reminders(
                 !out.is_human(),
             )
             .await?;
-            // Handle complete/incomplete via dedicated methods
             if complete {
-                r.engine.complete_reminder(&id).await?;
+                let target = id.clone();
+                with_reminders_retry(&mut r.engine, |e| {
+                    let id = target.clone();
+                    Box::pin(async move { e.complete_reminder(&id).await })
+                })
+                .await?;
                 r.save()?;
                 print_ok(json, "Completed");
                 return Ok(());
             }
             if incomplete {
-                r.engine.uncomplete_reminder(&id).await?;
+                let target = id.clone();
+                with_reminders_retry(&mut r.engine, |e| {
+                    let id = target.clone();
+                    Box::pin(async move { e.uncomplete_reminder(&id).await })
+                })
+                .await?;
                 r.save()?;
                 print_ok(json, "Marked incomplete");
                 return Ok(());
             }
             let resolved_due = due.map(|d| resolve_due_date(&d));
-            r.engine
-                .edit_reminder(
-                    &id,
-                    title.as_deref(),
-                    resolved_due.as_deref(),
-                    clear_due,
-                    notes.as_deref(),
-                    priority.as_deref(),
-                )
-                .await?;
+            let target = id.clone();
+            let title_arg = title.clone();
+            let due_arg = resolved_due.clone();
+            let notes_arg = notes.clone();
+            let pri_arg = priority.clone();
+            with_reminders_retry(&mut r.engine, |e| {
+                let id = target.clone();
+                let title = title_arg.clone();
+                let due = due_arg.clone();
+                let notes = notes_arg.clone();
+                let pri = pri_arg.clone();
+                Box::pin(async move {
+                    e.edit_reminder(
+                        &id,
+                        title.as_deref(),
+                        due.as_deref(),
+                        clear_due,
+                        notes.as_deref(),
+                        pri.as_deref(),
+                    )
+                    .await
+                })
+            })
+            .await?;
             r.save()?;
             print_ok(json, "Updated");
         }

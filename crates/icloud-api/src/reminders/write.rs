@@ -19,7 +19,7 @@ impl SyncEngine {
         priority: Option<&str>,
         notes: Option<&str>,
         parent_partial: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let owner = self.owner_id().await?;
         let list_id = self
             .cache
@@ -72,9 +72,9 @@ impl SyncEngine {
         rd.modified_ts = Some(chrono::Utc::now().timestamp_millis());
         rd.change_tag = first_change_tag(&result);
         let rn = record_name.clone();
-        self.cache.reminders.insert(record_name, rd);
+        self.cache.reminders.insert(record_name.clone(), rd);
         self.cache.ds.item_changed(rn);
-        Ok(())
+        Ok(record_name)
     }
 
     pub async fn add_reminders_batch(
@@ -82,7 +82,7 @@ impl SyncEngine {
         titles: &[String],
         list_name: &str,
         parent_partial: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let owner = self.owner_id().await?;
         let list_id = self
             .cache
@@ -110,6 +110,7 @@ impl SyncEngine {
         let result = self.ck.modify_records(&owner, ops).await?;
         check_ck_record_errors(&result)?;
         let now = chrono::Utc::now().timestamp_millis();
+        let mut record_names: Vec<String> = Vec::with_capacity(names.len());
         for (rn, title) in names {
             let mut rd = ReminderData {
                 title,
@@ -128,9 +129,10 @@ impl SyncEngine {
                 }
             }
             self.cache.reminders.insert(rn.clone(), rd);
-            self.cache.ds.item_changed(rn);
+            self.cache.ds.item_changed(rn.clone());
+            record_names.push(rn);
         }
-        Ok(())
+        Ok(record_names)
     }
 
     pub async fn complete_reminder(&mut self, partial: &str) -> Result<()> {

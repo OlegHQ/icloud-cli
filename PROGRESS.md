@@ -2,6 +2,176 @@
 
 Handoff log for cross-session work. New sessions should skim this before planning larger changes.
 
+## 2026-06-13 - Release readiness
+
+- Removed the tracked `.envrc` Homebrew `LIBRARY_PATH` workaround; native Linux
+  builds pass with `LIBRARY_PATH` unset, and `.envrc` is now ignored as a local
+  developer file.
+- Added root release metadata: `README.md`, `LICENSE`, `rust-toolchain.toml`,
+  package repository metadata, CI workflow, tag-based release workflow, and
+  hook installer scripts for POSIX shells and PowerShell.
+- Added `.githooks/pre-push` to auto-run `cargo fmt --all` and
+  `cargo clippy --fix` before `cargo test`; if fixes are applied, the hook
+  stops the push so the changes can be reviewed and committed.
+- Made the workspace clippy-clean under `cargo clippy --workspace --all-targets
+  -- -D warnings` by fixing repeated resolver type complexity and mechanical
+  `filter_map(...then...)`/signature lints.
+
+### Verified
+
+- `env -u LIBRARY_PATH cargo check --workspace`
+- `cargo fmt --all`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo test --workspace --locked`
+
+### Remaining risks
+
+- Local check-only builds for non-native x86_64 Linux, Windows GNU, and macOS
+  targets failed because this ARM Linux host lacks the matching C
+  cross-compilers/Apple SDKs needed by `ring`; the release workflow uses native
+  GitHub runners instead.
+- GitHub Actions macOS labels should be monitored over time because hosted
+  runner labels change; the current workflow uses `macos-26` for Apple Silicon
+  and `macos-26-intel` for Intel.
+
+## 2026-04-27 — IMPROVEMENT.md sweep
+
+Implemented Phase 0/1/2/3 items from `IMPROVEMENT.md` (P0-4 deferred — needs an
+upstream `bashbox` patch). Items addressed:
+
+- **P0-1** `find_item` canonical IDs round-trip (`crates/icloud-api/src/store.rs`).
+  Strip the prefix from both sides and switch the suffix-match from `contains`
+  to `starts_with`. 5 unit tests under `store::find_item_tests`.
+- **P0-2** `/tmp` is pre-seeded inside `ICloudFs::new` so `[ -d /tmp ]`,
+  `mkdir /tmp/sub`, and shell redirects under `/tmp` work without relying on
+  bashbox's default-cwd layout. `ICloudFs::new` is now `async`; both
+  `cmd_bash.rs` and `cmd_cp.rs` already `await`.
+- **P0-3** Every CLI mutation in `cmd_reminders.rs` and `cmd_notes.rs` now
+  wraps the engine call in `with_reminders_retry` / `with_notes_retry`. Stale
+  `recordChangeTag`/`OP_LOCK_FAILURE` no longer surface to the user.
+- **P1-1** `add_reminder` and `add_reminders_batch` return the canonical
+  `Reminder/<UUID>` (singular) and `Vec<String>` (batch); CLI emits these as
+  `id` / `ids` in `--json`, plus `id` for `notes create`.
+- **P1-2** `print_ok`, `print_ok_with`, `print_hme_action` now emit human
+  success on **stdout**; `hint(...)` continues to use stderr. `output.rs`
+  documents the stream contract at the top.
+- **P1-3** `print_whoami` and `handle_hme` accept `OutputMode`; `--plain`
+  emits TSV (whoami: 4 fields; HME list: 7 fields) and `--quiet` emits a
+  count for HME list / `ok|failed` for whoami.
+- **P2-1** `/Attachments` is hidden from root readdir; stat/read/readdir all
+  return `NotFound` consistently. SPEC.md notes this as future work.
+- **P3-1** `Edit::due` help text matches `Add::due`; both now advertise
+  `today, tomorrow, yesterday, YYYY-MM-DD` (the only forms `str_to_ts`
+  actually accepts).
+- **P3-2** `notes folders <name> --create` parity with `reminders lists`.
+  `--rename` was deliberately not added because the API lacks
+  `rename_folder`.
+- **P3-3** Top-level `--help` ends with an `EXIT CODES:` section that matches
+  the source mapping (0 success, 2 usage, 3 auth, 4 upstream).
+- **P3-4** `icloud version` prints text in human mode and a small JSON
+  object (`{name, package, version}`) with `--json`.
+- **P3-5** `--body` long help documents the verbatim semantics and points
+  scripts at stdin for multi-line payloads.
+- **P3-6** `prompt_2fa` now refuses interactively when `--no-input` is set
+  (or `--json`), surfacing a clean auth error instead of blocking on stdin.
+
+Not done in this pass:
+
+- **P2-2** Live verify that `mkdir /Notes/<folder>` shows up in
+  `notes folders` after a sync — verified live with `e2e-folder-...`,
+  see live-e2e section below.
+- New unit-test scaffolds for `output.rs` stream destinations (P1-2 tests
+  in IMPROVEMENT.md) — not added because they require capturing stdout
+  without disturbing the existing mutation tests; existing format-shape
+  contracts are covered indirectly by the new `id` JSON fields.
+
+### Verified
+
+- `cargo fmt --all`
+- `cargo build --workspace` (warning-clean)
+- `cargo test --workspace` — 67 passing, 1 ignored
+- `cargo run -p icloud-cli -- version` and `--json version`
+- `cargo run -p icloud-cli -- --help` (exit-code section appears)
+
+### Live e2e against `oleg@nexo.sh`
+
+- `whoami` (default, `--plain`, `--quiet`) — all three modes formatted
+  correctly (P1-3).
+- Reminder full round-trip on the canonical `Reminder/<UUID>` returned
+  by `add -j`: `add → edit --priority → complete → delete --force`
+  (P0-1, P1-1, P0-3).
+- `reminders delete <UUID-prefix> --force` resolves via `find_item`
+  suffix path (P0-1).
+- `reminders add-batch ... -j` returns `ids: [...]` (P1-1); both
+  reminders deleted by canonical id.
+- Stream contract: `reminders add` writes "Added: ..." to stdout and
+  the hint to stderr (P1-2).
+- HME `--quiet` prints `88` (count); `--plain` emits 7-field TSV (P1-3).
+- `icloud bash -c '[ -d /tmp ] && echo TMP_DIR_OK; mkdir /tmp/sub'`
+  works; `/tmp` is no longer ENOENT (P0-2).
+- `ls /` no longer lists `Attachments`; `ls /Attachments` returns
+  ENOENT (P2-1).
+- `notes create` (stdin markdown) returns `id`+`folder`+`title`; `notes
+  get <uuid>` retrieves the body; `notes delete <uuid>` succeeds
+  (P0-1, P1-1).
+- `notes folders <name> --create -j` returns the new folder id;
+  `notes sync && notes folders --json` lists it; `notes folders <name>
+  --delete --force` cleans it up (P3-2, P2-2 verified live).
+- `reminders complete Reminder/00000000-...` returns exit code `2`
+  (`EXIT_USAGE`), aligned with the help-text mapping (P3-3).
+- 3-iteration `add → edit → complete → delete` loop produced **no**
+  `oplock`/`conflict`/`stale`/`changeTag` errors on stdout/stderr
+  (P0-3).
+- `bash -c 'echo data > /tmp/x && cat /tmp/x'` → `data`
+  (P0-4: bashbox redirect wiring).
+- `bash -c 'echo one > /tmp/x; echo two >> /tmp/x; cat /tmp/x'` →
+  `one\ntwo` (P0-4 append).
+- `bash -c 'ls /nope 2> /tmp/e; cat /tmp/e'` → `ls: cannot access ...`
+  via the file (P0-4 stderr redirect).
+- `bash -c 'echo redirect-data > /Notes/<folder>/test.md && cat ...'`
+  created the note in iCloud and the body roundtripped (P0-4 +
+  iCloud VFS).
+
+### Bashbox (`OlegHQ/bashbox`)
+
+- Patched `interpreter/execution_engine.rs` to call
+  `pre_open_output_redirects` before dispatch and `apply_redirections`
+  after, for both `Simple` and `Compound` commands. Added
+  `collect_simple_command_redirects` for the suffix/prefix flatten.
+- Added 7 redirect tests (`bash::tests::test_redirect_*`); library suite
+  is now 2119 passing (was 2112).
+- Pushed as `ee1080a509aeb5e09e084c998a318a6976247f13` and pinned in
+  both `crates/icloud-bash/Cargo.toml` and
+  `crates/icloud-cli/Cargo.toml`.
+
+Pre-existing clippy lints remain in `icloud-api` (`type_complexity`,
+`filter_map_bool_then`, `useless_vec`) and `icloud-bash`/`icloud-cli`
+(`filter_map_bool_then`, `redundant_else`, …). They were present on the
+pre-change baseline and were not introduced by this work; one redundant
+closure I introduced in `output.rs` was removed.
+
+### Remaining risks
+
+- The closure pattern around `with_*_retry` clones strings on every retry.
+  That's fine for the current call rate (one mutation per CLI invocation)
+  and intentional — the helper signature requires `'static` futures.
+- `notes create -j` derives `title` from the first markdown line by
+  stripping leading `#` chars; it does not normalise to whatever Apple
+  Notes ends up storing as the title. The `id` field is authoritative.
+- HME `list` plain/quiet output is now stable; consumers that previously
+  scraped the pretty-printed JSON (default human mode) need to switch to
+  `--json`.
+
+### Next tasks
+
+- Land the bashbox redirect wiring (P0-4) so `>`, `>>`, and `2>` actually
+  hit the configured `FileSystem`. Without it, `icloud bash -c 'echo data
+  > /tmp/x'` still drops the data on the floor.
+- Live-verify Notes folder creation (P2-2) and add a regression for the
+  cache-freshness path if needed.
+- Consider an `output_contract` unit-test crate that captures stdout/
+  stderr via redirect to lock the P1-2 contract in.
+
 ## Current architecture
 
 - Workspace crates: `icloud-api`, `icloud-cli`, `icloud-bash`.

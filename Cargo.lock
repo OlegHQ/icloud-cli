@@ -163,7 +163,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 [[package]]
 name = "bashbox"
 version = "0.1.0"
-source = "git+https://github.com/OlegHQ/bashbox?rev=ac7c34eebcc2efcf1895b566c72d9c3265ecad79#ac7c34eebcc2efcf1895b566c72d9c3265ecad79"
+source = "git+https://github.com/OlegHQ/bashbox?rev=ee1080a509aeb5e09e084c998a318a6976247f13#ee1080a509aeb5e09e084c998a318a6976247f13"
 dependencies = [
  "async-trait",
  "awk-rs",

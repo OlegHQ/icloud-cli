@@ -78,10 +78,15 @@ fn note_entries(eng: &NotesSyncEngine, folder_name: &str) -> Vec<DisambiguatedEn
         return Vec::new();
     };
 
-    build_disambiguated_entries(eng.cache.notes.iter().filter_map(|(id, note)| {
-        (!note.deleted && note.folder_ref.as_deref() == Some(folder_id.as_str()))
-            .then(|| (id.clone(), note.title.clone()))
-    }))
+    build_disambiguated_entries(
+        eng.cache
+            .notes
+            .iter()
+            .filter(|(_, note)| {
+                !note.deleted && note.folder_ref.as_deref() == Some(folder_id.as_str())
+            })
+            .map(|(id, note)| (id.clone(), note.title.clone())),
+    )
 }
 
 fn reminder_entries(eng: &SyncEngine, list_name: &str) -> Vec<DisambiguatedEntry> {
@@ -89,10 +94,13 @@ fn reminder_entries(eng: &SyncEngine, list_name: &str) -> Vec<DisambiguatedEntry
         return Vec::new();
     };
 
-    build_disambiguated_entries(eng.cache.reminders.iter().filter_map(|(id, reminder)| {
-        (reminder.list_ref.as_deref() == Some(list_id.as_str()))
-            .then(|| (id.clone(), reminder.title.clone()))
-    }))
+    build_disambiguated_entries(
+        eng.cache
+            .reminders
+            .iter()
+            .filter(|(_, reminder)| reminder.list_ref.as_deref() == Some(list_id.as_str()))
+            .map(|(id, reminder)| (id.clone(), reminder.title.clone())),
+    )
 }
 
 fn resolve_note_id(eng: &NotesSyncEngine, folder: &str, filename: &str) -> Option<String> {
@@ -119,12 +127,7 @@ fn build_hme_entries(aliases: Vec<HmeAlias>) -> Vec<HmeEntry> {
         .into_iter()
         .map(|alias| {
             let base = if alias.label.trim().is_empty() {
-                alias
-                    .hme
-                    .split('@')
-                    .next()
-                    .unwrap_or("alias")
-                    .to_string()
+                alias.hme.split('@').next().unwrap_or("alias").to_string()
             } else {
                 alias.label.clone()
             };
@@ -145,8 +148,7 @@ fn render_hme_markdown(alias: &HmeAlias) -> String {
         active: alias.is_active,
         origin: alias.origin.clone(),
         created: alias.create_timestamp.and_then(|ms| {
-            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
-                .map(|dt| dt.to_rfc3339())
+            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms).map(|dt| dt.to_rfc3339())
         }),
     };
     // Body: heading + free-form note + a plain-text email line that makes
@@ -211,12 +213,16 @@ pub struct ICloudFs {
 }
 
 impl ICloudFs {
-    pub fn new(
+    pub async fn new(
         inner: Arc<InMemoryFs>,
         notes: Arc<Mutex<NotesSyncEngine>>,
         reminders: Arc<Mutex<SyncEngine>>,
         hme: Arc<HideMyEmailClient>,
     ) -> Self {
+        // /tmp is advertised by the root readdir; pre-seed it so [ -d /tmp ],
+        // shell redirects, and mkdir /tmp/sub work even though we override
+        // bashbox's default cwd-derived layout.
+        let _ = inner.mkdir("/tmp", &MkdirOptions { recursive: true }).await;
         Self {
             inner,
             notes,
@@ -425,9 +431,7 @@ impl FileSystem for ICloudFs {
             operation: "open".to_string(),
         })? {
             VfsTarget::HideMyEmailAliases => self.hme_raw_json(path).await,
-            VfsTarget::HideMyEmailFile { filename } => {
-                self.read_hme_file(path, &filename).await
-            }
+            VfsTarget::HideMyEmailFile { filename } => self.read_hme_file(path, &filename).await,
             VfsTarget::NotesFile {
                 folder_name,
                 filename,
@@ -436,16 +440,18 @@ impl FileSystem for ICloudFs {
                 list_name,
                 filename,
             } => self.read_reminder_file(&list_name, &filename).await,
-            VfsTarget::AttachmentsFile { .. } => Err(FsError::Other {
-                message: "Attachment binary download not yet implemented".to_string(),
-            }),
+            VfsTarget::AttachmentsFile { .. } | VfsTarget::AttachmentsRoot => {
+                Err(FsError::NotFound {
+                    path: path.to_string(),
+                    operation: "open".to_string(),
+                })
+            }
             VfsTarget::NotesFolder { .. }
             | VfsTarget::RemindersList { .. }
             | VfsTarget::Root
             | VfsTarget::NotesRoot
             | VfsTarget::RemindersRoot
-            | VfsTarget::HideMyEmailRoot
-            | VfsTarget::AttachmentsRoot => Err(FsError::IsDirectory {
+            | VfsTarget::HideMyEmailRoot => Err(FsError::IsDirectory {
                 path: path.to_string(),
                 operation: "read".to_string(),
             }),
@@ -685,8 +691,11 @@ impl FileSystem for ICloudFs {
             VfsTarget::Root
             | VfsTarget::NotesRoot
             | VfsTarget::RemindersRoot
-            | VfsTarget::HideMyEmailRoot
-            | VfsTarget::AttachmentsRoot => Ok(fixed_stat(true)),
+            | VfsTarget::HideMyEmailRoot => Ok(fixed_stat(true)),
+            VfsTarget::AttachmentsRoot => Err(FsError::NotFound {
+                path: path.to_string(),
+                operation: "stat".to_string(),
+            }),
             VfsTarget::HideMyEmailAliases => Ok(fixed_stat(false)),
             VfsTarget::HideMyEmailFile { filename } => {
                 let entries = self.hme_entries(path).await?;
@@ -824,7 +833,6 @@ impl FileSystem for ICloudFs {
             operation: "scandir".to_string(),
         })? {
             VfsTarget::Root => Ok(vec![
-                dent("Attachments", true),
                 dent("Notes", true),
                 dent("Reminders", true),
                 dent("HideMyEmail", true),
@@ -870,7 +878,10 @@ impl FileSystem for ICloudFs {
                 }
                 Ok(out)
             }
-            VfsTarget::AttachmentsRoot => Ok(vec![]),
+            VfsTarget::AttachmentsRoot => Err(FsError::NotFound {
+                path: path.to_string(),
+                operation: "scandir".to_string(),
+            }),
             _ => Err(FsError::NotDirectory {
                 path: path.to_string(),
                 operation: "scandir".to_string(),

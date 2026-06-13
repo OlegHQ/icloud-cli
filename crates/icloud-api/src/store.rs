@@ -135,23 +135,168 @@ pub trait StoreCache: Default {
             .map(|(id, _)| id.clone())
     }
 
-    /// Find an item by exact title (case-insensitive) or record-name prefix/contains.
+    /// Find an item by exact title (case-insensitive) or canonical record-name / UUID prefix.
+    ///
+    /// Accepts both the canonical form (`Reminder/<UUID>`, `Note/<UUID>`) and a bare
+    /// UUID prefix. Title match (case-insensitive) wins before any ID heuristic.
     fn find_item(&self, partial: &str) -> Option<String> {
         let p = partial.to_ascii_lowercase();
-        // Exact title match first
         for (id, item) in self.items() {
             if Self::item_title(item).to_ascii_lowercase() == p {
                 return Some(id.clone());
             }
         }
-        // Then ID prefix/contains match
+        let p_suffix = p.rsplit_once('/').map(|(_, u)| u).unwrap_or(&p);
         for id in self.items().keys() {
-            let check = id.rsplit_once('/').map(|(_, u)| u).unwrap_or(id);
-            if check.to_ascii_lowercase().contains(&p) {
+            let key_suffix = id.rsplit_once('/').map(|(_, u)| u).unwrap_or(id);
+            let key_lower = key_suffix.to_ascii_lowercase();
+            if key_lower == p_suffix || key_lower.starts_with(p_suffix) {
                 return Some(id.clone());
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod find_item_tests {
+    use super::*;
+
+    #[derive(Debug, Default, Serialize, Deserialize, Clone)]
+    struct TItem {
+        title: String,
+    }
+
+    #[derive(Default)]
+    struct TCache {
+        items: HashMap<String, TItem>,
+        names: HashMap<String, String>,
+        sync_token: Option<String>,
+        owner_id: Option<String>,
+        updated_at: Option<String>,
+        ds: DirtyState,
+    }
+
+    impl StoreCache for TCache {
+        type Item = TItem;
+        fn sync_token(&self) -> Option<&str> {
+            self.sync_token.as_deref()
+        }
+        fn set_sync_token(&mut self, t: Option<String>) {
+            self.sync_token = t;
+        }
+        fn owner_id(&self) -> Option<&str> {
+            self.owner_id.as_deref()
+        }
+        fn set_owner_id(&mut self, id: Option<String>) {
+            self.owner_id = id;
+        }
+        fn names(&self) -> &HashMap<String, String> {
+            &self.names
+        }
+        fn names_mut(&mut self) -> &mut HashMap<String, String> {
+            &mut self.names
+        }
+        fn items(&self) -> &HashMap<String, Self::Item> {
+            &self.items
+        }
+        fn items_mut(&mut self) -> &mut HashMap<String, Self::Item> {
+            &mut self.items
+        }
+        fn label() -> &'static str {
+            "test"
+        }
+        fn meta_table() -> &'static str {
+            "meta"
+        }
+        fn names_table() -> &'static str {
+            "names"
+        }
+        fn items_table() -> &'static str {
+            "items"
+        }
+        fn missing_version_is_empty() -> bool {
+            true
+        }
+        fn updated_at_str(&self) -> Option<&str> {
+            self.updated_at.as_deref()
+        }
+        fn set_updated_at_str(&mut self, ts: Option<String>) {
+            self.updated_at = ts;
+        }
+        fn ds(&self) -> &DirtyState {
+            &self.ds
+        }
+        fn ds_mut(&mut self) -> &mut DirtyState {
+            &mut self.ds
+        }
+        fn item_title(item: &Self::Item) -> &str {
+            &item.title
+        }
+    }
+
+    fn cache_with(items: &[(&str, &str)]) -> TCache {
+        let mut c = TCache::default();
+        for (id, title) in items {
+            c.items.insert(
+                id.to_string(),
+                TItem {
+                    title: title.to_string(),
+                },
+            );
+        }
+        c
+    }
+
+    #[test]
+    fn find_item_accepts_canonical_record_id() {
+        let c = cache_with(&[("Reminder/ABCDEF12-3456", "Buy milk")]);
+        assert_eq!(
+            c.find_item("Reminder/ABCDEF12-3456").as_deref(),
+            Some("Reminder/ABCDEF12-3456")
+        );
+    }
+
+    #[test]
+    fn find_item_accepts_bare_uuid_prefix() {
+        let c = cache_with(&[("Reminder/ABCDEF12-3456", "Buy milk")]);
+        assert_eq!(
+            c.find_item("ABCDEF12").as_deref(),
+            Some("Reminder/ABCDEF12-3456")
+        );
+    }
+
+    #[test]
+    fn find_item_preserves_exact_title_precedence() {
+        let mut c = cache_with(&[
+            ("Reminder/AAA-111", "buy milk"),
+            ("Reminder/BBB-222", "buy milk"),
+        ]);
+        // Inject a third item whose UUID happens to start with the title-derived suffix
+        c.items.insert(
+            "Reminder/buy".to_string(),
+            TItem {
+                title: "totally different".to_string(),
+            },
+        );
+        let found = c.find_item("Buy Milk").unwrap();
+        assert!(found == "Reminder/AAA-111" || found == "Reminder/BBB-222");
+    }
+
+    #[test]
+    fn find_item_is_case_insensitive_for_ids() {
+        let c = cache_with(&[("Reminder/ABCDEF12-3456", "x")]);
+        assert_eq!(
+            c.find_item("reminder/abcdef12-3456").as_deref(),
+            Some("Reminder/ABCDEF12-3456")
+        );
+    }
+
+    #[test]
+    fn find_item_rejects_unrelated_substring() {
+        let c = cache_with(&[("Reminder/ABCDEF12-3456", "x")]);
+        assert!(c.find_item("BCDEF").is_none());
+        assert!(c.find_item("9999").is_none());
     }
 }
 

@@ -7,6 +7,8 @@ use crate::error::Result;
 use super::models::*;
 use super::table::TableData;
 
+type LinkResolver<'a> = dyn Fn(&str) -> Option<String> + 'a;
+
 // ── Title → filename stem ───────────────────────────────
 
 const DIV_SLASH: char = '\u{2215}'; // ∕
@@ -190,11 +192,7 @@ pub enum AttachmentContent {
 /// `attachments` maps attachment identifier → resolved content.
 /// Pass an empty map if attachment data isn't available.
 pub fn to_markdown(doc: &NoteDocument) -> String {
-    to_markdown_with_attachments(
-        doc,
-        &HashMap::new(),
-        None::<&dyn Fn(&str) -> Option<String>>,
-    )
+    to_markdown_with_attachments(doc, &HashMap::new(), None::<fn(&str) -> Option<String>>)
 }
 
 /// Convert a NoteDocument to Markdown with resolved attachment content.
@@ -206,7 +204,7 @@ pub fn to_markdown_with_attachments(
     if doc.text.is_empty() {
         return String::new();
     }
-    let lr: Option<&dyn Fn(&str) -> Option<String>> = link_resolver.as_ref().map(|f| f as _);
+    let lr: Option<&LinkResolver<'_>> = link_resolver.as_ref().map(|f| f as &LinkResolver<'_>);
     // Normalize: merge adjacent runs with same inline formatting to avoid mid-word markers.
     let doc = &normalize_runs(doc);
     let mut out = String::with_capacity(doc.text.len() * 2);
@@ -336,7 +334,7 @@ fn emit_paragraph(
     para_style: &ParagraphStyle,
     list_number: usize,
     attachments: &HashMap<String, AttachmentContent>,
-    link_resolver: Option<&dyn Fn(&str) -> Option<String>>,
+    link_resolver: Option<&LinkResolver<'_>>,
 ) {
     // Empty paragraphs get no styling — CRDT drift often puts blockquote/monospaced
     // style on blank lines between styled paragraphs.
@@ -446,7 +444,7 @@ fn emit_inline(
     para: &str,
     runs: &[(usize, &AttributeRun)],
     attachments: &HashMap<String, AttachmentContent>,
-    link_resolver: Option<&dyn Fn(&str) -> Option<String>>,
+    link_resolver: Option<&LinkResolver<'_>>,
 ) {
     if runs.is_empty() {
         out.push_str(para);
@@ -615,15 +613,12 @@ pub fn from_markdown(md: &str) -> Result<ParsedNote> {
 /// e.g. `/Notes/Folder/Title.md` → `applenotes:note/UUID?ownerIdentifier=...`
 pub fn from_markdown_with_context(
     md: &str,
-    link_resolver: Option<&dyn Fn(&str) -> Option<String>>,
+    link_resolver: Option<&LinkResolver<'_>>,
 ) -> Result<ParsedNote> {
     from_markdown_inner(md, link_resolver)
 }
 
-fn from_markdown_inner(
-    md: &str,
-    link_resolver: Option<&dyn Fn(&str) -> Option<String>>,
-) -> Result<ParsedNote> {
+fn from_markdown_inner(md: &str, link_resolver: Option<&LinkResolver<'_>>) -> Result<ParsedNote> {
     let mut text = String::new();
     let mut runs: Vec<AttributeRun> = Vec::new();
     let mut tables: Vec<TableData> = Vec::new();
@@ -917,7 +912,7 @@ fn parse_line_prefix(line: &str, is_first: bool) -> (&str, ParagraphStyle) {
 fn parse_line_inline(
     content: &str,
     style: &ParagraphStyle,
-    link_resolver: Option<&dyn Fn(&str) -> Option<String>>,
+    link_resolver: Option<&LinkResolver<'_>>,
 ) -> Vec<(String, AttributeRun)> {
     let mut results = Vec::new();
     let mut pos = 0;

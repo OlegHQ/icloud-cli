@@ -43,6 +43,10 @@ CloudKit API call.  Illegal operations return appropriate POSIX errors.
 | `/tmp/` | Temporary storage | Full read/write |
 | `/tmp/**` | Arbitrary files | Full read/write |
 
+> Future: `/Attachments/<note-id>/<filename>` for read-only access to note
+> attachment binaries. Not in v1 — `/Attachments` is hidden from the root
+> listing and returns `NotFound` for stat/read/readdir.
+
 ## File Formats
 
 ### Note File (`/Notes/<Folder>/<Title>.md`)

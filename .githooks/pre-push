@@ -1,0 +1,33 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "${ICLOUD_SKIP_PRE_PUSH:-}" = "1" ]; then
+  echo "pre-push: skipped because ICLOUD_SKIP_PRE_PUSH=1" >&2
+  exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "pre-push: cargo is required" >&2
+  exit 1
+fi
+
+before="$(mktemp)"
+after="$(mktemp)"
+trap 'rm -f "$before" "$after"' EXIT INT TERM
+
+git diff --no-ext-diff --binary >"$before"
+
+echo "pre-push: formatting" >&2
+cargo fmt --all
+
+echo "pre-push: clippy auto-fix" >&2
+cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged --locked -- -D warnings
+
+git diff --no-ext-diff --binary >"$after"
+if ! cmp -s "$before" "$after"; then
+  echo "pre-push: fixes were applied; review and commit them, then push again" >&2
+  exit 1
+fi
+
+echo "pre-push: tests" >&2
+cargo test --workspace --locked

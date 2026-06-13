@@ -3,7 +3,7 @@ use icloud_api::session::{load_session, SecretsBackend};
 use icloud_api::HideMyEmailClient;
 use icloud_api::Result as IResult;
 
-use crate::output::{hint, print_hme_action, print_hme_generate, print_json};
+use crate::output::{hint, print_hme_action, print_hme_generate, print_hme_list_mode, OutputMode};
 use crate::SessionArg;
 
 #[derive(Subcommand)]
@@ -50,13 +50,18 @@ pub(crate) enum HmeCmd {
     },
 }
 
-pub(crate) async fn handle_hme(json: bool, secrets: SecretsBackend, sub: HmeCmd) -> IResult<()> {
+pub(crate) async fn handle_hme(
+    out: OutputMode,
+    secrets: SecretsBackend,
+    sub: HmeCmd,
+) -> IResult<()> {
+    let json = out.json;
     match sub {
         HmeCmd::List { sess } => {
             let s = load_session(&sess.path(), secrets)?;
             let h = HideMyEmailClient::new(s)?;
             let v = h.list_aliases().await?;
-            print_json(&v);
+            print_hme_list_mode(out, &v);
         }
 
         HmeCmd::Generate { sess, lang } => {
@@ -64,7 +69,7 @@ pub(crate) async fn handle_hme(json: bool, secrets: SecretsBackend, sub: HmeCmd)
             let h = HideMyEmailClient::new(s)?;
             let email = h.generate(&lang).await?;
             print_hme_generate(json, email.as_deref());
-            if !json {
+            if out.is_human() {
                 if let Some(e) = &email {
                     hint(&[&format!(
                         "icloud hme reserve {e} --label \"My Label\"  — activate it"

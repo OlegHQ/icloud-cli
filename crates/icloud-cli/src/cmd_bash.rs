@@ -48,7 +48,8 @@ pub async fn run_bash(
     let inner = Arc::new(InMemoryFs::new());
     // Keep a typed handle alongside the trait-object one so the REPL can
     // call ICloudFs-specific methods (cache invalidation around `edit`).
-    let icloud_fs_typed = Arc::new(ICloudFs::new(inner, ne.clone(), re.clone(), Arc::new(hme)));
+    let icloud_fs_typed =
+        Arc::new(ICloudFs::new(inner, ne.clone(), re.clone(), Arc::new(hme)).await);
     let icloud_fs: Arc<dyn bashbox::fs::FileSystem> = icloud_fs_typed.clone();
 
     let (n_count, r_count) = {
@@ -219,11 +220,7 @@ async fn run_repl(bash: &mut Bash, icloud_fs: &ICloudFs) -> i32 {
     0
 }
 
-async fn handle_repl_builtin(
-    bash: &mut Bash,
-    icloud_fs: &ICloudFs,
-    input: &str,
-) -> BuiltinOutcome {
+async fn handle_repl_builtin(bash: &mut Bash, icloud_fs: &ICloudFs, input: &str) -> BuiltinOutcome {
     let Ok(tokens) = shell_words::split(input) else {
         return BuiltinOutcome::NotHandled;
     };
@@ -275,7 +272,7 @@ async fn edit_vfs_file(
 
     let original = match bash.read_file(path).await {
         Ok(content) => content,
-        Err(err) if matches!(err, bashbox::fs::types::FsError::NotFound { .. }) => String::new(),
+        Err(bashbox::fs::types::FsError::NotFound { .. }) => String::new(),
         Err(err) => {
             return Err(icloud_api::Error::Usage(format!(
                 "failed to read {path}: {err}"
@@ -418,8 +415,28 @@ fn word_at(line: &str, pos: usize) -> (usize, &str) {
 }
 
 fn needs_shell_quoting(s: &str) -> bool {
-    s.chars()
-        .any(|c| matches!(c, ' ' | '\t' | '(' | ')' | '\'' | '"' | '\\' | '|' | '&' | ';' | '<' | '>' | '$' | '`' | '*' | '?' | '[' | ']'))
+    s.chars().any(|c| {
+        matches!(
+            c,
+            ' ' | '\t'
+                | '('
+                | ')'
+                | '\''
+                | '"'
+                | '\\'
+                | '|'
+                | '&'
+                | ';'
+                | '<'
+                | '>'
+                | '$'
+                | '`'
+                | '*'
+                | '?'
+                | '['
+                | ']'
+        )
+    })
 }
 
 fn shell_quote(s: &str) -> String {

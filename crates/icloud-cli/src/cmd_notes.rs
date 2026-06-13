@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Subcommand;
 use icloud_api::session::SecretsBackend;
-use icloud_api::Result as IResult;
+use icloud_api::{with_notes_retry, Result as IResult};
 
 use crate::output::{self, hint, print_json, print_ok, print_ok_with, OutputMode};
 use crate::{read_body_or_stdin, sync_spinner, NotesArgs, OpenNotes};
@@ -28,13 +28,16 @@ pub(crate) enum NotesCmd {
         #[arg(short = 'n', long, default_value = "50")]
         limit: usize,
     },
-    /// List note folders.
+    /// Manage note folders. Shows all folders when called without flags.
     Folders {
         #[command(flatten)]
         args: NotesArgs,
         /// Delete the folder (and its notes).
-        #[arg(short = 'd', long)]
+        #[arg(short = 'd', long, conflicts_with = "create")]
         delete: bool,
+        /// Create the folder if it doesn't exist.
+        #[arg(long)]
+        create: bool,
         /// Folder name to operate on.
         name: Option<String>,
         /// Skip confirmation prompts.
@@ -58,8 +61,10 @@ pub(crate) enum NotesCmd {
         /// Target folder name.
         #[arg(short = 'f', long, default_value = "Notes")]
         folder: String,
-        /// Markdown body (reads stdin if omitted).
-        #[arg(long)]
+        /// Markdown body, taken verbatim. Shells do not interpret escape sequences in
+        /// argument values; for multi-line bodies, pipe stdin instead:
+        ///   printf '# Title\n\nBody line 1\nBody line 2\n' | icloud notes create --folder Notes
+        #[arg(long, verbatim_doc_comment)]
         body: Option<String>,
     },
     /// Update a note's body from Markdown.
@@ -179,6 +184,7 @@ pub(crate) async fn handle_notes(
         NotesCmd::Folders {
             args,
             delete,
+            create,
             name,
             force,
         } => {
@@ -204,7 +210,6 @@ pub(crate) async fn handle_notes(
                             return Ok(());
                         }
                     }
-                    // Delete all notes in the folder, then remove from cache
                     let notes_in_folder: Vec<String> = r
                         .engine
                         .get_notes()
@@ -214,7 +219,12 @@ pub(crate) async fn handle_notes(
                         .collect();
                     let count = notes_in_folder.len();
                     for note_id in &notes_in_folder {
-                        r.engine.delete_note(note_id).await?;
+                        let target = note_id.clone();
+                        with_notes_retry(&mut r.engine, |e| {
+                            let id = target.clone();
+                            Box::pin(async move { e.delete_note(&id).await })
+                        })
+                        .await?;
                     }
                     r.save()?;
                     print_ok_with(
@@ -222,8 +232,20 @@ pub(crate) async fn handle_notes(
                         &format!("Deleted folder '{folder_name}' ({count} notes)"),
                         &serde_json::json!({"folder": folder_name, "notes_deleted": count}),
                     );
+                } else if create {
+                    let fn_arg = folder_name.clone();
+                    let id = with_notes_retry(&mut r.engine, |e| {
+                        let n = fn_arg.clone();
+                        Box::pin(async move { e.create_folder(&n).await })
+                    })
+                    .await?;
+                    r.save()?;
+                    print_ok_with(
+                        json,
+                        &format!("Created folder '{folder_name}'"),
+                        &serde_json::json!({"folder": folder_name, "id": id}),
+                    );
                 } else {
-                    // Show notes in this folder
                     let notes = r.engine.get_notes();
                     r.save()?;
                     let filtered: Vec<_> = notes
@@ -291,24 +313,43 @@ pub(crate) async fn handle_notes(
             )
             .await?;
             let folder_name = folder.clone();
-            // If body starts with "RAW:" use it as pre-encoded body (HAR replay test)
-            if md.starts_with("RAW:") {
-                r.engine
-                    .create_note_raw(
-                        "RawTest",
-                        "raw test",
-                        md.trim_start_matches("RAW:").trim(),
-                        &folder,
-                    )
-                    .await?;
+            let folder_arg = folder.clone();
+            let md_arg = md.clone();
+            let id = if md.starts_with("RAW:") {
+                with_notes_retry(&mut r.engine, |e| {
+                    let body = md_arg.clone();
+                    let folder = folder_arg.clone();
+                    Box::pin(async move {
+                        e.create_note_raw(
+                            "RawTest",
+                            "raw test",
+                            body.trim_start_matches("RAW:").trim(),
+                            &folder,
+                        )
+                        .await
+                    })
+                })
+                .await?
             } else {
-                r.engine.create_note(&md, &folder).await?;
-            }
+                with_notes_retry(&mut r.engine, |e| {
+                    let body = md_arg.clone();
+                    let folder = folder_arg.clone();
+                    Box::pin(async move { e.create_note(&body, &folder).await })
+                })
+                .await?
+            };
+            let title = md
+                .lines()
+                .next()
+                .unwrap_or("Untitled")
+                .trim_start_matches('#')
+                .trim()
+                .to_string();
             r.save()?;
             print_ok_with(
                 json,
                 &format!("Created in folder '{folder_name}'"),
-                &serde_json::json!({"folder": folder_name}),
+                &serde_json::json!({"id": id, "folder": folder_name, "title": title}),
             );
         }
 
@@ -323,7 +364,13 @@ pub(crate) async fn handle_notes(
                 !out.is_human(),
             )
             .await?;
-            r.engine.update_note(&id, &md).await?;
+            let target = id.clone();
+            with_notes_retry(&mut r.engine, |e| {
+                let id = target.clone();
+                let md = md.clone();
+                Box::pin(async move { e.update_note(&id, &md).await })
+            })
+            .await?;
             r.save()?;
             print_ok(json, "Updated");
         }
@@ -338,7 +385,12 @@ pub(crate) async fn handle_notes(
                 !out.is_human(),
             )
             .await?;
-            r.engine.delete_note(&id).await?;
+            let target = id.clone();
+            with_notes_retry(&mut r.engine, |e| {
+                let id = target.clone();
+                Box::pin(async move { e.delete_note(&id).await })
+            })
+            .await?;
             r.save()?;
             print_ok(json, "Deleted");
         }
@@ -354,7 +406,14 @@ pub(crate) async fn handle_notes(
             )
             .await?;
             let folder_name = folder.clone();
-            r.engine.move_note(&id, &folder).await?;
+            let target = id.clone();
+            let folder_arg = folder.clone();
+            with_notes_retry(&mut r.engine, |e| {
+                let id = target.clone();
+                let folder = folder_arg.clone();
+                Box::pin(async move { e.move_note(&id, &folder).await })
+            })
+            .await?;
             r.save()?;
             print_ok_with(
                 json,

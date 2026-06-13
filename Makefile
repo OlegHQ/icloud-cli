@@ -1,9 +1,17 @@
 PREFIX ?= $(HOME)/.local
 
-.PHONY: build install uninstall clean
+.PHONY: build check hooks install uninstall clean
 
 build:
 	cargo build --release
+
+check:
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets --locked -- -D warnings
+	cargo test --workspace --locked
+
+hooks:
+	./scripts/install-hooks.sh
 
 install: build
 	install -d $(PREFIX)/bin

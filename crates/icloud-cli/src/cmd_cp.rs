@@ -98,12 +98,15 @@ impl VfsContext {
         let notes_engine = Arc::new(Mutex::new(notes_engine));
         let reminders_engine = Arc::new(Mutex::new(reminders_engine));
 
-        let fs = Arc::new(ICloudFs::new(
-            Arc::new(InMemoryFs::new()),
-            notes_engine.clone(),
-            reminders_engine.clone(),
-            Arc::new(hme),
-        ));
+        let fs = Arc::new(
+            ICloudFs::new(
+                Arc::new(InMemoryFs::new()),
+                notes_engine.clone(),
+                reminders_engine.clone(),
+                Arc::new(hme),
+            )
+            .await,
+        );
 
         Ok(Self {
             notes_store,

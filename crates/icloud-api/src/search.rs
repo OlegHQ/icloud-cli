@@ -390,11 +390,7 @@ impl SearchIndex {
     /// cache file with an `updated_at` stamp — the fingerprint of the current
     /// alias list is the only freshness signal, so we always fetch and let
     /// `refresh_service` skip the rebuild when nothing changed.
-    pub async fn refresh_hme(
-        &self,
-        client: &HideMyEmailClient,
-        force: bool,
-    ) -> Result<usize> {
+    pub async fn refresh_hme(&self, client: &HideMyEmailClient, force: bool) -> Result<usize> {
         let aliases = client.list_aliases_parsed().await?;
         let docs = collect_hme_documents(&aliases);
         self.refresh_service(SearchService::HideMyEmail, &docs, force, None)
@@ -645,10 +641,16 @@ fn note_entries(notes: &NotesSyncEngine, folder_name: &str) -> Vec<NamedEntry> {
         return Vec::new();
     };
 
-    build_disambiguated_entries(notes.cache.notes.iter().filter_map(|(id, note)| {
-        (!note.deleted && note.folder_ref.as_deref() == Some(folder_id.as_str()))
-            .then(|| (id.clone(), note.title.clone()))
-    }))
+    build_disambiguated_entries(
+        notes
+            .cache
+            .notes
+            .iter()
+            .filter(|(_, note)| {
+                !note.deleted && note.folder_ref.as_deref() == Some(folder_id.as_str())
+            })
+            .map(|(id, note)| (id.clone(), note.title.clone())),
+    )
 }
 
 fn reminder_entries(reminders: &SyncEngine, list_name: &str) -> Vec<NamedEntry> {
@@ -661,10 +663,8 @@ fn reminder_entries(reminders: &SyncEngine, list_name: &str) -> Vec<NamedEntry> 
             .cache
             .reminders
             .iter()
-            .filter_map(|(id, reminder)| {
-                (reminder.list_ref.as_deref() == Some(list_id.as_str()))
-                    .then(|| (id.clone(), reminder.title.clone()))
-            }),
+            .filter(|(_, reminder)| reminder.list_ref.as_deref() == Some(list_id.as_str()))
+            .map(|(id, reminder)| (id.clone(), reminder.title.clone())),
     )
 }
 
@@ -678,12 +678,7 @@ fn collect_hme_documents(aliases: &[HmeAlias]) -> Vec<IndexedDocument> {
         .iter()
         .map(|alias| {
             let base = if alias.label.trim().is_empty() {
-                alias
-                    .hme
-                    .split('@')
-                    .next()
-                    .unwrap_or("alias")
-                    .to_string()
+                alias.hme.split('@').next().unwrap_or("alias").to_string()
             } else {
                 alias.label.clone()
             };
@@ -916,7 +911,7 @@ mod tests {
     fn search_roundtrip_filters_by_scope() {
         let dir = tempdir().unwrap();
         let index = SearchIndex::new(dir.path());
-        let docs = vec![
+        let docs = [
             IndexedDocument {
                 id: "notes:note-1".into(),
                 service: SearchService::Notes,

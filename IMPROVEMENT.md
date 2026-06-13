@@ -5,6 +5,28 @@ below is anchored to a `path:line` reference and was checked, not paraphrased.
 Changes from the prior draft are summarised in the **What changed in this
 revision** section and folded into the per-item entries.
 
+## Implementation status (2026-04-27 sweep)
+
+| Item | Status | Notes |
+|---|---|---|
+| P0-1 `find_item` canonical IDs | ✅ done | `crates/icloud-api/src/store.rs` + 5 unit tests |
+| P0-2 pre-seed `/tmp` | ✅ done | `ICloudFs::new` is now `async`; mkdirs `/tmp` |
+| P0-3 retry wrappers in CLI | ✅ done | All `cmd_reminders` / `cmd_notes` mutations |
+| P0-4 bashbox redirect wiring | ✅ done | `OlegHQ/bashbox@ee1080a`; rev bumped in both crate manifests; 7 new bashbox tests + live smoke pass |
+| P1-1 created IDs in JSON | ✅ done | `add_reminder` returns `String`, batch returns `Vec<String>` |
+| P1-2 stdout/stderr contract | ✅ done | `print_ok`/`print_ok_with`/`print_hme_action` use `println!` |
+| P1-3 `--plain` / `--quiet` for whoami + HME | ✅ done | TSV + count modes |
+| P2-1 hide `/Attachments` from root | ✅ done | Consistent `NotFound` for stat/read/readdir |
+| P2-2 live-verify Notes mkdir | ⏳ deferred | Requires a real account |
+| P3-1 align due-date help | ✅ done | Both sides: `today, tomorrow, yesterday, YYYY-MM-DD` |
+| P3-2 `notes folders --create` | ✅ done | `--rename` deferred (no API support) |
+| P3-3 document exit codes | ✅ done | `after_long_help` on `Cli` |
+| P3-4 `icloud version` | ✅ done | Human + JSON modes |
+| P3-5 `--body` verbatim docs | ✅ done | Long help on `notes create --body` |
+| P3-6 `--no-input` in 2FA prompt | ✅ done | Clean auth error in non-interactive mode |
+| P3-7 `--code-stdin` | ⏳ deferred | Documented as P3-priority follow-up |
+| Phase 4 (P4-1..P4-6) | ⏳ deferred | Tracked as separate issues |
+
 This is the implementation contract. Open PRs against the items in the
 **Implementation order** section. Do not start the iCloud-CLI Claude skill
 (`./skills/icloud-cli`) until all Phase 0 + Phase 1 items here ship — the skill

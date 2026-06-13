@@ -134,7 +134,8 @@ impl IcloudFsArgs {
 #[command(
     name = "icloud",
     version,
-    about = "CLI for iCloud Reminders, Notes, and Hide My Email"
+    about = "CLI for iCloud Reminders, Notes, and Hide My Email",
+    after_long_help = "EXIT CODES:\n  0  success\n  2  usage error or unknown resource\n  3  authentication / session error\n  4  transport, upstream, or cache error"
 )]
 struct Cli {
     /// Output JSON to stdout for scripts and agents.
@@ -272,6 +273,8 @@ enum Command {
         /// Destination path. Use `icloud:/...` for the iCloud side.
         dest: String,
     },
+    /// Print the CLI version (and machine-readable JSON with --json).
+    Version,
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -361,7 +364,16 @@ open_service!(
     label: "notes",
 );
 
-async fn prompt_2fa(info: &icloud_api::TwoFactorInfo, auth: &AuthFlow) -> IResult<String> {
+async fn prompt_2fa(
+    info: &icloud_api::TwoFactorInfo,
+    auth: &AuthFlow,
+    no_input: bool,
+) -> IResult<String> {
+    if no_input {
+        return Err(icloud_api::Error::Auth(
+            "two-factor authentication required but --no-input is set; pass --code or set ICLOUD_2FA_CODE".into(),
+        ));
+    }
     if !info.trusted_phones.is_empty() {
         let phone = &info.trusted_phones[0];
         eprintln!("Requesting SMS code to {}...", phone.number);
@@ -498,7 +510,6 @@ async fn main() {
 // ── Command dispatch ───────────────────────────────────────
 
 async fn run(cli: Cli, out: OutputMode) -> IResult<()> {
-    let json = out.json;
     let secrets: SecretsBackend = cli.secrets.into();
     let max_age = cli.max_age;
 
@@ -515,7 +526,7 @@ async fn run(cli: Cli, out: OutputMode) -> IResult<()> {
             cmd_reminders::handle_reminders(out, secrets, max_age, sub).await
         }
         Command::Notes(sub) => cmd_notes::handle_notes(out, secrets, max_age, sub).await,
-        Command::Hme(sub) => cmd_hme::handle_hme(json, secrets, sub).await,
+        Command::Hme(sub) => cmd_hme::handle_hme(out, secrets, sub).await,
         Command::Bash {
             args,
             command,
@@ -531,7 +542,18 @@ async fn run(cli: Cli, out: OutputMode) -> IResult<()> {
             index,
         } => {
             cmd_search::run_search(
-                out, secrets, max_age, args, query, service, paths, limit, rebuild, index,
+                out,
+                secrets,
+                max_age,
+                cmd_search::SearchRequest {
+                    args,
+                    query,
+                    service,
+                    paths,
+                    limit,
+                    rebuild,
+                    index,
+                },
             )
             .await
         }
@@ -541,6 +563,24 @@ async fn run(cli: Cli, out: OutputMode) -> IResult<()> {
             src,
             dest,
         } => cmd_cp::run_cp(out, secrets, max_age, args, recursive, &src, &dest).await,
+        Command::Version => {
+            handle_version(out);
+            Ok(())
+        }
+    }
+}
+
+fn handle_version(out: OutputMode) {
+    let version = env!("CARGO_PKG_VERSION");
+    let name = env!("CARGO_PKG_NAME");
+    if out.json {
+        output::print_json(&serde_json::json!({
+            "name": "icloud",
+            "version": version,
+            "package": name,
+        }));
+    } else {
+        println!("icloud {version}");
     }
 }
 
@@ -556,8 +596,9 @@ fn resolve_password(
 ) -> IResult<String> {
     if password_stdin {
         let mut buf = String::new();
-        std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut buf)
-            .map_err(|e| icloud_api::Error::Auth(format!("failed to read --password-stdin: {e}")))?;
+        std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut buf).map_err(|e| {
+            icloud_api::Error::Auth(format!("failed to read --password-stdin: {e}"))
+        })?;
         let pw = buf.trim_end_matches(['\r', '\n']).to_string();
         if pw.is_empty() {
             return Err(icloud_api::Error::Auth(
@@ -577,7 +618,8 @@ fn resolve_password(
             .map_err(|e| icloud_api::Error::Auth(format!("failed to read password: {e}")));
     }
     Err(icloud_api::Error::Auth(
-        "missing password (use --password-stdin, --password, ICLOUD_PASSWORD, or run on a TTY)".into(),
+        "missing password (use --password-stdin, --password, ICLOUD_PASSWORD, or run on a TTY)"
+            .into(),
     ))
 }
 
@@ -600,17 +642,13 @@ async fn handle_login(
     if let Some(info) = tfa_info {
         if let Some(c) = code {
             auth.submit_2fa(&c).await?;
-        } else if !json && !out.no_input {
-            let code = prompt_2fa(&info, &auth).await?;
+        } else {
+            let code = prompt_2fa(&info, &auth, out.no_input || json).await?;
             if let Some(phone) = info.trusted_phones.first() {
                 auth.submit_sms_code(&code, phone.id).await?;
             } else {
                 auth.submit_2fa(&code).await?;
             }
-        } else {
-            return Err(icloud_api::Error::Auth(
-                "two-factor authentication required (pass --code or ICLOUD_2FA_CODE)".into(),
-            ));
         };
     }
     let data = auth.finish_login().await?;
@@ -631,13 +669,12 @@ async fn handle_login(
 }
 
 async fn handle_whoami(out: OutputMode, secrets: SecretsBackend, sess: SessionArg) -> IResult<()> {
-    let json = out.json;
     let session_path = sess.path();
     let session_data = load_session(&session_path, secrets)?;
     let ok = AuthFlow::validate_session(&session_data)
         .await
         .unwrap_or(false);
-    print_whoami(json, &session_path, &session_data, ok);
+    print_whoami(out, &session_path, &session_data, ok);
     if out.is_human() && !ok {
         hint(&["icloud login               — re-authenticate"]);
     }
