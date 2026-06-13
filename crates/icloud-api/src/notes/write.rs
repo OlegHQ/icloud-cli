@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::cloudkit::{b64_encode_str, first_change_tag, CloudKitClient};
 use crate::error::{Error, Result};
 
-use super::cache::NoteData;
+use super::cache::{NoteData, TRASH_FOLDER_ID};
 use super::markdown;
 use super::proto;
 use super::sync::NotesSyncEngine;
@@ -27,7 +27,7 @@ impl NotesSyncEngine {
             .cache
             .notes
             .iter()
-            .filter(|(_, nd)| !nd.deleted && nd.folder_ref.is_some())
+            .filter(|(_, nd)| nd.is_active() && nd.folder_ref.is_some())
             .map(|(id, nd)| {
                 (
                     (nd.folder_ref.as_deref().unwrap(), nd.title.as_str()),
@@ -301,8 +301,7 @@ impl NotesSyncEngine {
             .get(&full)
             .ok_or_else(|| Error::Notes("cache miss".into()))?;
 
-        let trash_id = "TrashFolder-CloudKit";
-        let trash_ref = self.folder_ref(trash_id);
+        let trash_ref = self.folder_ref(TRASH_FOLDER_ID);
         let now = chrono::Utc::now().timestamp_millis();
 
         let mut fields = serde_json::Map::new();
@@ -328,7 +327,7 @@ impl NotesSyncEngine {
                 "recordType": "Note",
                 "recordName": &full,
                 "recordChangeTag": ct,
-                "parent": { "recordName": trash_id },
+                "parent": { "recordName": TRASH_FOLDER_ID },
                 "fields": fields,
             }
         });
@@ -490,7 +489,7 @@ impl NotesSyncEngine {
             .find_folder_by_name(folder_name)
             .ok_or_else(|| Error::Notes(format!("folder '{folder_name}' not found")))?;
         for nd in self.cache.notes.values() {
-            if nd.deleted {
+            if !nd.is_active() {
                 continue;
             }
             if nd.folder_ref.as_deref() == Some(&folder_id) {

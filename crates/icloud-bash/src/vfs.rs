@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 
 use crate::frontmatter::{
     parse_reminder_write_input, render_hme, render_note, render_reminder, strip_frontmatter,
-    HmeFrontmatter, NoteFrontmatter, ReminderFrontmatter,
+    HmeFrontmatter, NoteFrontmatter, ReminderFrontmatter, ReminderWriteFields,
 };
 use crate::pathmap::{classify, is_icloud_prefix, normalize_vpath, VfsTarget};
 use crate::sanitize::{disambiguate_filename, filename_to_title, title_to_filename_stem};
@@ -83,7 +83,7 @@ fn note_entries(eng: &NotesSyncEngine, folder_name: &str) -> Vec<DisambiguatedEn
             .notes
             .iter()
             .filter(|(_, note)| {
-                !note.deleted && note.folder_ref.as_deref() == Some(folder_id.as_str())
+                note.is_active() && note.folder_ref.as_deref() == Some(folder_id.as_str())
             })
             .map(|(id, note)| (id.clone(), note.title.clone())),
     )
@@ -177,6 +177,35 @@ fn resolve_reminder_id(eng: &SyncEngine, list: &str, filename: &str) -> Option<S
         .find(|entry| entry.filename == filename)
         .map(|entry| entry.id)
         .or_else(|| eng.cache.find_reminder(&title_guess))
+}
+
+fn reminder_title_from_body(body: &str, filename: &str) -> (String, bool) {
+    let title = body.trim();
+    if title.is_empty() {
+        (filename_to_title(filename), false)
+    } else {
+        (title.to_string(), true)
+    }
+}
+
+fn reminder_title_update<'a>(
+    existing_title: &str,
+    parsed_title: &'a str,
+    body_supplied_title: bool,
+) -> Option<&'a str> {
+    if body_supplied_title && existing_title != parsed_title {
+        Some(parsed_title)
+    } else {
+        None
+    }
+}
+
+fn reminder_write_needs_edit(fields: &ReminderWriteFields, title_update: Option<&str>) -> bool {
+    title_update.is_some()
+        || fields.due.is_some()
+        || fields.clear_due
+        || fields.notes.is_some()
+        || fields.priority.is_some()
 }
 
 fn is_icloud_path(path: &str) -> bool {
@@ -547,14 +576,7 @@ impl FileSystem for ICloudFs {
                     .to_string();
                 let (fields, body) =
                     parse_reminder_write_input(&text).map_err(|e| FsError::Other { message: e })?;
-                let title = {
-                    let t = body.trim();
-                    if t.is_empty() {
-                        filename_to_title(&filename)
-                    } else {
-                        t.to_string()
-                    }
-                };
+                let (title, body_supplied_title) = reminder_title_from_body(&body, &filename);
                 let mut eng = self.reminders.lock().await;
                 eng.cache
                     .find_list_by_name(&list_name)
@@ -582,27 +604,37 @@ impl FileSystem for ICloudFs {
                             .map_err(|e| map_api_err(path, "write", e))?;
                         }
                     }
+                    let title_update = {
+                        let existing_title = eng
+                            .cache
+                            .reminders
+                            .get(&rid)
+                            .map(|rd| rd.title.as_str())
+                            .ok_or_else(|| FsError::NotFound {
+                                path: path.to_string(),
+                                operation: "write".to_string(),
+                            })?;
+                        reminder_title_update(existing_title, &title, body_supplied_title)
+                            .map(str::to_owned)
+                    };
                     let due_flat = fields.due.clone().flatten();
-                    let need_edit = fields.due.is_some()
-                        || fields.clear_due
-                        || fields.notes.is_some()
-                        || fields.priority.is_some();
+                    let need_edit = reminder_write_needs_edit(&fields, title_update.as_deref());
                     if need_edit {
                         let rid = rid.clone();
-                        let title = title.clone();
+                        let title_update = title_update.clone();
                         let clear_due = fields.clear_due;
                         let notes = fields.notes.clone();
                         let pri = fields.priority.clone();
                         with_reminders_retry(&mut eng, |e| {
                             let rid = rid.clone();
-                            let title = title.clone();
+                            let title_update = title_update.clone();
                             let due_flat = due_flat.clone();
                             let notes = notes.clone();
                             let pri = pri.clone();
                             Box::pin(async move {
                                 e.edit_reminder(
                                     &rid,
-                                    Some(&title),
+                                    title_update.as_deref(),
                                     due_flat.as_deref(),
                                     clear_due,
                                     notes.as_deref(),
@@ -1226,5 +1258,44 @@ fn dent(name: &str, is_dir: bool) -> DirentEntry {
         is_file: !is_dir,
         is_directory: is_dir,
         is_symlink: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reminder_body_only_write_requests_title_update() {
+        let fields = ReminderWriteFields::default();
+        let (title, supplied) = reminder_title_from_body("new title\n", "old title.md");
+        let title_update = reminder_title_update("old title", &title, supplied);
+
+        assert_eq!(title_update, Some("new title"));
+        assert!(reminder_write_needs_edit(&fields, title_update));
+    }
+
+    #[test]
+    fn reminder_same_body_title_needs_no_edit_without_fields() {
+        let fields = ReminderWriteFields::default();
+        let (title, supplied) = reminder_title_from_body("same title", "same title.md");
+        let title_update = reminder_title_update("same title", &title, supplied);
+
+        assert_eq!(title_update, None);
+        assert!(!reminder_write_needs_edit(&fields, title_update));
+    }
+
+    #[test]
+    fn reminder_frontmatter_only_write_does_not_force_title_update() {
+        let fields = ReminderWriteFields {
+            notes: Some("metadata update".to_string()),
+            ..Default::default()
+        };
+        let (title, supplied) = reminder_title_from_body("", "collision (2).md");
+        let title_update = reminder_title_update("collision", &title, supplied);
+
+        assert_eq!(title, "collision (2)");
+        assert_eq!(title_update, None);
+        assert!(reminder_write_needs_edit(&fields, title_update));
     }
 }

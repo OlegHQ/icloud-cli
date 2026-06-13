@@ -401,7 +401,7 @@ impl SearchIndex {
             .cache
             .notes
             .iter()
-            .filter(|(_, note)| !note.deleted)
+            .filter(|(_, note)| note.is_active())
             .filter(|(_, note)| note.body_markdown.is_none() && note.search_text.is_none())
             .map(|(id, _)| id.clone())
             .collect();
@@ -647,7 +647,7 @@ fn note_entries(notes: &NotesSyncEngine, folder_name: &str) -> Vec<NamedEntry> {
             .notes
             .iter()
             .filter(|(_, note)| {
-                !note.deleted && note.folder_ref.as_deref() == Some(folder_id.as_str())
+                note.is_active() && note.folder_ref.as_deref() == Some(folder_id.as_str())
             })
             .map(|(id, note)| (id.clone(), note.title.clone())),
     )

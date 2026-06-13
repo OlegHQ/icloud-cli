@@ -2,6 +2,250 @@
 
 Handoff log for cross-session work. New sessions should skim this before planning larger changes.
 
+## 2026-06-13 - Reminders VFS body-only write fix release
+
+Fixed the release blocker found in the installed CLI re-smoke: existing
+Reminder files now treat a non-empty Markdown body as the desired reminder
+title and call `edit_reminder()` when that title differs from the cached title,
+even if no writable YAML frontmatter fields changed.
+
+### Changed
+
+- Bumped the workspace version to `0.1.1` for the fix release.
+- Added Reminders VFS write-planning tests for:
+  - body-only writes requesting a title update
+  - same-title body writes avoiding unnecessary CloudKit edits
+  - frontmatter-only writes updating metadata without forcing filename-derived
+    title changes
+- Installed the fixed binary with
+  `cargo install --path crates/icloud-cli --root /home/snowbear/.local --force --locked`.
+
+### Verified
+
+- `cargo fmt --all -- --check`
+- `cargo test -p icloud-bash reminder_ --locked`
+- `cargo build -p icloud-cli --locked`
+- `cargo test --workspace --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- Live disposable smoke against `target/debug/icloud`:
+  - body-only `icloud cp` renamed an existing Reminder
+  - `icloud bash -c 'echo new-title > /Reminders/<list>/<old>.md'` renamed an
+    existing Reminder
+  - frontmatter notes/priority update still worked and read back through VFS
+- Installed binary smoke:
+  - `icloud version` prints `icloud 0.1.1`
+  - body-only `icloud cp` renamed an existing Reminder
+
+### Release
+
+- Commit and push this state, then push tag `v0.1.1` to trigger the release
+  workflow.
+- `cargo install --locked` still warns that locked `fastrand 2.4.0` is yanked;
+  the install succeeds, but dependency refresh remains a follow-up before a
+  broader public release.
+
+## 2026-06-13 - Installed CLI re-smoke after release fixes
+
+Re-tested the installed binary at `/home/snowbear/.local/bin/icloud`
+(`icloud 0.1.0`) against the already-authenticated account with disposable
+`codex-*` Notes folders, Notes, Reminders lists, and Reminders.
+
+### Verified
+
+- Local gates: `cargo test --workspace --locked`,
+  `cargo fmt --all -- --check`, and
+  `cargo clippy --workspace --all-targets -- -D warnings` all passed.
+- Session validation: `icloud --no-input --max-age 0 --quiet whoami`
+  returned `ok`.
+- Root VFS and `/tmp`: `icloud bash -c 'ls /'` showed
+  `HideMyEmail, Notes, Reminders, tmp`; escaped-space redirect/read under
+  `/tmp` worked.
+- Notes CLI/VFS: folder create, Markdown note create/get/update, Markdown title
+  rename through `icloud cp`, VFS read, escaped-space VFS write, host
+  `cp` -> iCloud -> host roundtrip, and Notes search index all worked.
+- Reminders CLI/VFS: list create, add, edit, list, read existing reminder
+  through VFS, complete, and recursive list cleanup all worked.
+- HME read-only smoke: `icloud hme list --quiet` returned a count and
+  `/HideMyEmail/aliases.json` exists in the VFS without printing alias data.
+- Parallel read-only invocations of `notes folders` and `reminders list`
+  completed without the previous redb-open failure.
+
+### New release blocker found
+
+- **Existing Reminders VFS body-only writes are ignored.** Repro:
+  1. Create a reminder `cp orig <stamp>` in a disposable list.
+  2. Write a local file containing only `cp renamed <stamp>` to
+     `icloud:/Reminders/<list>/cp orig <stamp>.md` with `icloud cp`.
+  3. `icloud reminders list all --list <list>` still shows the original title.
+
+  This violates `crates/icloud-bash/SPEC.md`, which says the Reminders file
+  body is the title and changing the body triggers a rename. The code path in
+  `ICloudFs::write_file` only calls `edit_reminder()` for existing reminders
+  when frontmatter fields changed (`due`, `notes`, `priority`, `completed`),
+  so a title/body-only update is dropped. Frontmatter updates still work and
+  also rename correctly because they force the edit path.
+
+### Cleanup state
+
+- Disposable active Notes folders, Reminders lists, and Reminders from this
+  re-smoke were removed.
+- Notes delete/folder cleanup still uses Apple Notes trash semantics, so any
+  disposable Notes moved to Recently Deleted must age out or be removed
+  manually from Apple Notes.
+
+### Next tasks
+
+1. Fix `crates/icloud-bash/src/vfs.rs` Reminders existing-file writes so a body
+   change always calls `edit_reminder(id, Some(title), ...)`, even when no
+   writable frontmatter fields changed.
+2. Add unit/integration coverage for Reminders VFS writes:
+   - existing reminder body-only write renames the reminder
+   - frontmatter-only write updates notes/priority/due without changing title
+   - redirect-created reminder receives command output instead of silently
+     keeping the initial filename-derived title
+3. Re-run the live disposable smoke:
+   - `icloud cp body-only.md icloud:/Reminders/<list>/<old>.md`
+   - `icloud bash -c 'echo new-title > /Reminders/<list>/<old>.md'`
+   - verify `icloud reminders list all --list <list>` and VFS paths converge.
+
+## 2026-06-13 - Installed CLI live smoke findings
+
+Smoke-tested the installed binary at `/home/snowbear/.local/bin/icloud`
+(`icloud 0.1.0`) against the already-authenticated account with disposable
+`codex-*` Notes folders, Notes, Reminders lists, and Reminders.
+
+### Verified
+
+- Session validation: `icloud --quiet whoami` returned `ok`.
+- Root VFS and `/tmp`: `icloud bash -c 'ls /'` showed
+  `HideMyEmail, Notes, Reminders, tmp`; `/tmp` redirect/read worked.
+- Notes CLI: folder create, note create, `notes get` Markdown body, update,
+  move, and `notes list` visibility all worked.
+- Notes VFS: reading an existing moved note worked; `mkdir /Notes/<folder>`
+  created a folder visible to `notes folders`; single-quoted paths with spaces
+  worked for redirect-created Notes files.
+- `icloud cp`: host Markdown file -> `icloud:/Notes/...` -> host file preserved
+  body content.
+- Reminders CLI: list create, add, edit, list, and complete worked in the full
+  smoke when operations were naturally spaced by other network calls.
+- Reminders VFS: reading an existing reminder and redirect-creating a new
+  reminder worked with single-quoted paths.
+- Search: `icloud search <marker> --service notes --rebuild` found the created
+  Markdown note.
+- Local gates: `cargo test --workspace --locked`, `cargo fmt --all -- --check`,
+  and `cargo clippy --workspace --all-targets -- -D warnings` all passed.
+
+### Release blockers found
+
+- **Bashbox path escaping:** backslash-escaped paths with spaces fail. Example:
+  `icloud bash -c 'echo hello > /tmp/foo\ bar; cat /tmp/foo\ bar'` creates a
+  literal `foo\ bar` entry and then cannot read `/tmp/foo bar`. Single-quoted
+  paths work. This affects generated shell commands for Notes/Reminders titles
+  or folders with spaces.
+- **Notes folder delete lies:** `icloud notes folders <name> --delete --force`
+  prints `Deleted folder ...` but only deletes/moves notes in the folder; it
+  never calls `NotesSyncEngine::delete_folder`, so empty folders remain after
+  sync. `icloud bash -c "rmdir '/Notes/<name>'"` does call the engine method and
+  removed the smoke folders.
+- **Recently Deleted leaks into `notes list`:** `notes delete` moves records to
+  `TrashFolder-CloudKit`; subsequent `notes sync && notes list` still shows
+  those notes under `Recently Deleted` because `get_notes()` only filters the
+  `Deleted` field, not the trash folder.
+- **CloudKit retry gap:** a focused add -> edit -> complete sequence hit
+  `HTTP 409 ZONE_BUSY` / `CAS Op-Lock failed`. `with_reminders_retry` missed it
+  because retry detection looks for `oplock` but not `op-lock`, `zone_busy`, or
+  CAS wording.
+- **Concurrent CLI DB open:** running Notes commands concurrently can fail with
+  `redb open: Database already open. Cannot acquire lock.` The current lock
+  file guards load/save sections, but redb itself rejects simultaneous opens.
+- **List deletion with children:** `reminders lists <name> --delete --force`
+  fails with CloudKit `VALIDATING_REFERENCE_ERROR` if the list still contains
+  reminders. User-facing delete needs either a recursive delete path or a clear
+  preflight error.
+
+### Cleanup state
+
+- Active smoke Notes folders, Reminders lists, and Reminders were removed.
+- Four disposable smoke Notes remain in Apple Notes `Recently Deleted` because
+  the CLI currently has no hard-purge operation. They use `codex-smoke-*`
+  titles and should age out or be removed manually in Apple Notes.
+
+### Next tasks
+
+1. Patch bashbox in `../bashbox` to handle backslash escapes in words and
+   redirection targets like Bash, add regression tests for `/tmp/foo\ bar`, push
+   the fork, then bump the pinned rev in both Cargo.toml files.
+2. Fix `cmd_notes.rs` folder deletion to delete contained notes, then call
+   `NotesSyncEngine::delete_folder`; add a CLI/unit test around the command
+   handler if possible and live-verify with `notes sync && notes folders`.
+3. Treat `TrashFolder-CloudKit` as non-active in `NotesSyncEngine::get_notes`,
+   VFS listings, search indexing, and exports unless an explicit
+   `--include-deleted`/trash mode is added.
+4. Expand CloudKit retry detection to include `zone_busy`, `CAS Op-Lock`,
+   `op-lock`, and HTTP 409 retry hints; add a small backoff/jitter before sync
+   + retry.
+5. Add process-level DB open serialization or retry/wait behavior around redb
+   open so parallel CLI invocations block briefly instead of failing.
+6. Make reminder list deletion either recursively delete child reminders first
+   or fail before the CloudKit call with a clear message and a documented
+   `--recursive`/`--delete-reminders` option.
+
+## 2026-06-13 - Release blockers fixed
+
+Implemented the correction plan from the installed CLI smoke test.
+
+- Patched `../bashbox` so normal word expansion removes the escape backslash
+  for escaped characters while preserving escaped glob metacharacter semantics.
+  Added `echo data > /tmp/foo\ bar; cat /tmp/foo\ bar` as a regression test.
+  Pushed `OlegHQ/bashbox` `dev` at
+  `2c4993bd7777cc648e8084729ee166e934dc38b1` and pinned both workspace
+  `bashbox` dependencies plus `Cargo.lock` to that revision.
+- Added a shared Notes active-record predicate that excludes
+  `TrashFolder-CloudKit`, then used it for Notes CLI listings, search
+  indexing, VFS listings/globs, and folder-delete emptiness checks.
+- Fixed `icloud notes folders <name> --delete --force` to call
+  `NotesSyncEngine::delete_folder` after moving/deleting contained active notes.
+- Expanded CloudKit retry classification for `ZONE_BUSY`, `CAS Op-Lock`,
+  hyphenated `op-lock`, and retry-hint wording, with short retry backoff before
+  resync.
+- Serialized redb opens behind the existing lock file so parallel CLI commands
+  wait instead of failing with `Database already open`.
+- Made `icloud reminders lists <name> --delete --force` recursively delete child
+  reminders first, ordered deepest child before parent, then delete the list.
+- Reinstalled the fixed CLI with
+  `cargo install --path crates/icloud-cli --root /home/snowbear/.local --force --locked`.
+
+### Verified
+
+- `cargo test --workspace --locked`
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `../bashbox`: `cargo test test_backslash_escaped_space_in_redirect_target --lib`
+- `../bashbox`: `cargo test --lib` (2120 passed, 4 ignored)
+- Live disposable smoke against `target/debug/icloud`:
+  - `/tmp/foo\ bar` redirect/read works.
+  - `/Notes/<folder with spaces>/<title with spaces>.md` redirect/read works
+    with backslash-escaped paths.
+  - Notes folder delete removes the folder after sync and the trashed note no
+    longer appears in `notes list`.
+  - Reminders list delete removes parent/child reminders before deleting the
+    list.
+  - Quick add -> edit -> complete reminder sequence succeeds.
+  - Parallel `notes folders` and `notes list` complete without redb-open
+    failure.
+- Installed binary check:
+  - `/home/snowbear/.local/bin/icloud version`
+  - `icloud --max-age 0 --no-input bash -c 'echo ok > /tmp/install\ check; cat /tmp/install\ check'`
+
+### Remaining risks
+
+- Apple Notes still retains deleted Notes in Recently Deleted. Normal CLI/VFS
+  surfaces now hide them, but there is still no hard-purge command.
+- The lock-file approach serializes cache opens conservatively. This favors
+  correctness for automation over concurrent read throughput.
+- `Cargo.lock` currently contains yanked `fastrand 2.4.0`; locked install still
+  succeeds, but dependency refresh should be considered before a public release.
+
 ## 2026-06-13 - Release readiness
 
 - Removed the tracked `.envrc` Homebrew `LIBRARY_PATH` workaround; native Linux

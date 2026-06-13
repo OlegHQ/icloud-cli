@@ -5,6 +5,8 @@ use std::collections::HashMap;
 
 use crate::store::{DirtyState, StoreCache};
 
+pub const TRASH_FOLDER_ID: &str = "TrashFolder-CloudKit";
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NoteData {
     pub title: String,
@@ -22,6 +24,12 @@ pub struct NoteData {
     pub body_markdown: Option<String>,
     #[serde(default, rename = "search_text")]
     pub search_text: Option<String>,
+}
+
+impl NoteData {
+    pub fn is_active(&self) -> bool {
+        !self.deleted && self.folder_ref.as_deref() != Some(TRASH_FOLDER_ID)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -134,5 +142,30 @@ impl NotesCache {
 
     pub fn find_note(&self, partial: &str) -> Option<String> {
         self.find_item(partial)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trash_folder_notes_are_not_active() {
+        let note = NoteData {
+            title: "deleted".into(),
+            folder_ref: Some(TRASH_FOLDER_ID.into()),
+            ..Default::default()
+        };
+        assert!(!note.is_active());
+    }
+
+    #[test]
+    fn regular_notes_are_active() {
+        let note = NoteData {
+            title: "active".into(),
+            folder_ref: Some("folder-id".into()),
+            ..Default::default()
+        };
+        assert!(note.is_active());
     }
 }

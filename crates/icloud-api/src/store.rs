@@ -374,7 +374,8 @@ impl<C: StoreCache> RedbStore<C> {
         out
     }
 
-    /// Shared read lock — multiple processes can load concurrently.
+    /// Open redb under the same exclusive gate used by writes. redb rejects
+    /// simultaneous opens in this CLI workload, so readers serialize too.
     pub fn with_lock_shared<R>(&self, f: impl FnOnce(&Database) -> Result<R>) -> Result<R> {
         let lock = OpenOptions::new()
             .create(true)
@@ -383,8 +384,8 @@ impl<C: StoreCache> RedbStore<C> {
             .write(true)
             .open(&self.lock_path)
             .map_err(|e| self.wrap(format!("lock file: {e}")))?;
-        lock.lock_shared()
-            .map_err(|e| self.wrap(format!("lock shared: {e}")))?;
+        lock.lock_exclusive()
+            .map_err(|e| self.wrap(format!("lock exclusive: {e}")))?;
         let out = (|| {
             let db = self.open_db()?;
             f(&db)

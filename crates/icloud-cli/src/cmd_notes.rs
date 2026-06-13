@@ -226,6 +226,12 @@ pub(crate) async fn handle_notes(
                         })
                         .await?;
                     }
+                    let target_folder = folder_name.clone();
+                    with_notes_retry(&mut r.engine, |e| {
+                        let folder = target_folder.clone();
+                        Box::pin(async move { e.delete_folder(&folder).await })
+                    })
+                    .await?;
                     r.save()?;
                     print_ok_with(
                         json,

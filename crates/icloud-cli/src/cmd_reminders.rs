@@ -1,4 +1,7 @@
+use std::collections::HashSet;
+
 use clap::Subcommand;
+use icloud_api::reminders::RemindersCache;
 use icloud_api::session::SecretsBackend;
 use icloud_api::{with_reminders_retry, Result as IResult};
 
@@ -318,6 +321,18 @@ pub(crate) async fn handle_reminders(
                             return Ok(());
                         }
                     }
+                    let list_id = r.engine.cache.find_list_by_name(list_name).ok_or_else(|| {
+                        icloud_api::Error::Reminders(format!("list '{list_name}' not found"))
+                    })?;
+                    let reminder_ids = reminder_ids_for_list_delete(&r.engine.cache, &list_id);
+                    let deleted_reminders = reminder_ids.len();
+                    for reminder_id in reminder_ids {
+                        with_reminders_retry(&mut r.engine, |e| {
+                            let id = reminder_id.clone();
+                            Box::pin(async move { e.delete_reminder(&id).await })
+                        })
+                        .await?;
+                    }
                     let ln = list_name.clone();
                     with_reminders_retry(&mut r.engine, |e| {
                         let ln = ln.clone();
@@ -325,7 +340,14 @@ pub(crate) async fn handle_reminders(
                     })
                     .await?;
                     r.save()?;
-                    print_ok(json, &format!("Deleted list '{list_name}'"));
+                    print_ok_with(
+                        json,
+                        &format!("Deleted list '{list_name}' ({deleted_reminders} reminder(s))"),
+                        &serde_json::json!({
+                            "list": list_name,
+                            "reminders_deleted": deleted_reminders,
+                        }),
+                    );
                 } else if create {
                     let ln = list_name.clone();
                     with_reminders_retry(&mut r.engine, |e| {
@@ -643,4 +665,93 @@ pub(crate) async fn handle_reminders(
         }
     }
     Ok(())
+}
+
+fn reminder_ids_for_list_delete(cache: &RemindersCache, list_id: &str) -> Vec<String> {
+    let mut ids: Vec<String> = cache
+        .reminders
+        .iter()
+        .filter(|(_, reminder)| reminder.list_ref.as_deref() == Some(list_id))
+        .map(|(id, _)| id.clone())
+        .collect();
+    ids.sort_by(|left, right| {
+        reminder_parent_depth(cache, right)
+            .cmp(&reminder_parent_depth(cache, left))
+            .then_with(|| left.cmp(right))
+    });
+    ids
+}
+
+fn reminder_parent_depth(cache: &RemindersCache, id: &str) -> usize {
+    let mut depth = 0;
+    let mut current = id;
+    let mut seen = HashSet::new();
+    while seen.insert(current.to_string()) {
+        let Some(parent) = cache
+            .reminders
+            .get(current)
+            .and_then(|reminder| reminder.parent_ref.as_deref())
+        else {
+            break;
+        };
+        depth += 1;
+        current = parent;
+    }
+    depth
+}
+
+#[cfg(test)]
+mod tests {
+    use icloud_api::reminders::ReminderData;
+
+    use super::*;
+
+    #[test]
+    fn reminder_list_delete_orders_children_before_parents() {
+        let mut cache = RemindersCache::default();
+        cache.lists.insert("list-a".into(), "List A".into());
+        cache.reminders.insert(
+            "Reminder/parent".into(),
+            ReminderData {
+                title: "parent".into(),
+                list_ref: Some("list-a".into()),
+                ..Default::default()
+            },
+        );
+        cache.reminders.insert(
+            "Reminder/child".into(),
+            ReminderData {
+                title: "child".into(),
+                list_ref: Some("list-a".into()),
+                parent_ref: Some("Reminder/parent".into()),
+                ..Default::default()
+            },
+        );
+        cache.reminders.insert(
+            "Reminder/grandchild".into(),
+            ReminderData {
+                title: "grandchild".into(),
+                list_ref: Some("list-a".into()),
+                parent_ref: Some("Reminder/child".into()),
+                ..Default::default()
+            },
+        );
+        cache.reminders.insert(
+            "Reminder/other-list".into(),
+            ReminderData {
+                title: "other".into(),
+                list_ref: Some("list-b".into()),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            reminder_ids_for_list_delete(&cache, "list-a"),
+            vec![
+                "Reminder/grandchild".to_string(),
+                "Reminder/child".to_string(),
+                "Reminder/parent".to_string(),
+            ]
+        );
+    }
 }

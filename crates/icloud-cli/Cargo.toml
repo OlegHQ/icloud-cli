@@ -16,7 +16,7 @@ clap = { version = "4", features = ["derive", "env"] }
 directories = "6"
 icloud-api = { path = "../icloud-api" }
 icloud-bash = { path = "../icloud-bash" }
-bashbox = { git = "https://github.com/OlegHQ/bashbox", rev = "ee1080a509aeb5e09e084c998a318a6976247f13" }
+bashbox = { git = "https://github.com/OlegHQ/bashbox", rev = "2c4993bd7777cc648e8084729ee166e934dc38b1" }
 indicatif = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

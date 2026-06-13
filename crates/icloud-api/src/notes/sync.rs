@@ -318,7 +318,7 @@ impl NotesSyncEngine {
     pub fn get_notes(&self) -> Vec<Note> {
         let mut out = Vec::new();
         for (id, nd) in &self.cache.notes {
-            if nd.deleted {
+            if !nd.is_active() {
                 continue;
             }
             let folder_name = nd

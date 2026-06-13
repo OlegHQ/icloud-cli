@@ -163,7 +163,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 [[package]]
 name = "bashbox"
 version = "0.1.0"
-source = "git+https://github.com/OlegHQ/bashbox?rev=ee1080a509aeb5e09e084c998a318a6976247f13#ee1080a509aeb5e09e084c998a318a6976247f13"
+source = "git+https://github.com/OlegHQ/bashbox?rev=2c4993bd7777cc648e8084729ee166e934dc38b1#2c4993bd7777cc648e8084729ee166e934dc38b1"
 dependencies = [
  "async-trait",
  "awk-rs",
@@ -1217,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "icloud-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "chrono",
@@ -1249,7 +1249,7 @@ dependencies = [
 
 [[package]]
 name = "icloud-bash"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "bashbox",
@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "icloud-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bashbox",
  "chrono",
