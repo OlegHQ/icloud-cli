@@ -6,21 +6,26 @@ use crate::cloudkit::{
 use crate::error::Result;
 use crate::title_doc::{extract_title, ts_to_str};
 
-/// Decode a list name: try base64 first, fall back to plain string, then TitleDocument.
+/// Decode a list name: current iCloud records use encrypted STRING; older CLI
+/// writes used base64 BYTES, so keep that fallback for already-synced records.
 fn decode_name_or_title(raw_name: &str, fields: &serde_json::Map<String, Value>) -> String {
     if !raw_name.is_empty() {
-        // Try base64 decode (bytes field)
-        if let Ok(bytes) =
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_name)
-        {
-            if let Ok(s) = std::str::from_utf8(&bytes) {
-                let s = s.trim();
-                if !s.is_empty() {
-                    return s.to_string();
+        let name_type = fields
+            .get("Name")
+            .and_then(|f| f.get("type"))
+            .and_then(|v| v.as_str());
+        if name_type == Some("BYTES") {
+            if let Ok(bytes) =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_name)
+            {
+                if let Ok(s) = std::str::from_utf8(&bytes) {
+                    let s = s.trim();
+                    if !s.is_empty() {
+                        return s.to_string();
+                    }
                 }
             }
         }
-        // Not valid base64 — use as-is (plain string from older records)
         return raw_name.to_string();
     }
     extract_title(&ck_field_string(fields, "TitleDocument"))

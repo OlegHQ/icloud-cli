@@ -1,7 +1,7 @@
-//! CRDT TitleDocument encoding for Reminders (protobuf wire, gzip, base64).
+//! CRDT TitleDocument encoding for Reminders (protobuf wire, zlib, base64).
 //! Ported from [icloud-reminders-cli/internal/utils](https://github.com/tarekbecker/icloud-reminders-cli).
 
-use flate2::write::GzEncoder;
+use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use std::io::Write;
 
@@ -43,7 +43,7 @@ pub(crate) fn position(replica: u64, offset: i64) -> Vec<u8> {
     out
 }
 
-/// Encode plain title text as Apple's gzipped+base64 TitleDocument payload.
+/// Encode plain title text as Apple's zlib+base64 TitleDocument payload.
 pub fn encode_title(title: &str) -> crate::Result<String> {
     let title_bytes = title.as_bytes();
     let char_len = title.chars().count() as u64;
@@ -98,16 +98,16 @@ pub fn encode_title(title: &str) -> crate::Result<String> {
     outer.extend_from_slice(&field_varint(1, 0));
     outer.extend_from_slice(&field_bytes(2, &document));
 
-    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
-    gz.write_all(&outer)?;
-    let compressed = gz.finish()?;
+    let mut zlib = ZlibEncoder::new(Vec::new(), Compression::default());
+    zlib.write_all(&outer)?;
+    let compressed = zlib.finish()?;
     Ok(base64::Engine::encode(
         &base64::engine::general_purpose::STANDARD,
         &compressed,
     ))
 }
 
-/// Extract title from a TitleDocument (base64 → gzip → protobuf wire format).
+/// Extract title from a TitleDocument (base64 → zlib/gzip → protobuf wire format).
 /// Structure: outer.field2(document).field3(note).field2(title_bytes).
 pub fn extract_title(td_b64: &str) -> String {
     if td_b64.is_empty() {
@@ -312,11 +312,38 @@ pub fn new_record_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
+    use flate2::write::GzEncoder;
 
     #[test]
     fn roundtrip_title_payload_contains_text() {
         let enc = encode_title("hello").expect("encode");
         let dec = extract_title(&enc);
         assert!(dec.contains("hello"));
+    }
+
+    #[test]
+    fn encoded_title_uses_zlib_payload() {
+        let enc = encode_title("hello").expect("encode");
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(enc)
+            .expect("base64");
+
+        assert_eq!(raw.first(), Some(&0x78));
+    }
+
+    #[test]
+    fn extract_title_still_reads_legacy_gzip_payload() {
+        let enc = encode_title("legacy title").expect("encode");
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(enc)
+            .expect("base64");
+        let proto = decompress(&raw);
+
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        gz.write_all(&proto).expect("gzip write");
+        let legacy = base64::engine::general_purpose::STANDARD.encode(gz.finish().expect("gzip"));
+
+        assert_eq!(extract_title(&legacy), "legacy title");
     }
 }

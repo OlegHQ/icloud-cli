@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 
-use crate::cloudkit::{b64_encode_str, first_change_tag};
+use crate::cloudkit::first_change_tag;
 use crate::error::{Error, Result};
 use crate::title_doc::{encode_title, new_record_name, str_to_ts};
 
@@ -244,17 +244,7 @@ impl SyncEngine {
                 .to_string()
                 .to_uppercase()
         );
-        let name_b64 = b64_encode_str(name);
-        let op = json!({
-            "operationType": "create",
-            "record": {
-                "recordType": "List",
-                "recordName": &record_name,
-                "fields": {
-                    "Name": {"value": name_b64, "type": "BYTES"},
-                }
-            }
-        });
+        let op = build_create_list_op(&record_name, name);
         let result = self.ck.modify_records(&owner, vec![op]).await?;
         check_ck_record_errors(&result)?;
         self.cache
@@ -281,7 +271,6 @@ impl SyncEngine {
             .and_then(|r| r["recordChangeTag"].as_str())
             .ok_or_else(|| Error::Reminders("cannot read list change tag".into()))?
             .to_string();
-        let name_b64 = b64_encode_str(new_name);
         let op = json!({
             "operationType": "update",
             "record": {
@@ -289,7 +278,7 @@ impl SyncEngine {
                 "recordName": &list_id,
                 "recordChangeTag": ct,
                 "fields": {
-                    "Name": {"value": name_b64, "type": "BYTES"},
+                    "Name": list_name_field(new_name),
                 }
             }
         });
@@ -364,6 +353,7 @@ impl SyncEngine {
         if let Some(t) = title {
             let enc = encode_title(t)?;
             fields.insert("TitleDocument".into(), json!({"value": enc}));
+            fields.insert("TitleDocumentAsset".into(), json!({"value": Value::Null}));
         }
         if clear_due {
             fields.insert("DueDate".into(), json!({}));
@@ -374,6 +364,7 @@ impl SyncEngine {
         if let Some(n) = notes {
             let enc = encode_title(n)?;
             fields.insert("NotesDocument".into(), json!({"value": enc}));
+            fields.insert("NotesDocumentAsset".into(), json!({"value": Value::Null}));
         }
         if let Some(p) = priority {
             let pv =
@@ -417,6 +408,33 @@ impl SyncEngine {
     }
 }
 
+fn list_name_field(name: &str) -> Value {
+    json!({"value": name, "type": "STRING", "isEncrypted": true})
+}
+
+fn build_create_list_op(record_name: &str, name: &str) -> Value {
+    json!({
+        "operationType": "create",
+        "record": {
+            "recordType": "List",
+            "recordName": record_name,
+            "fields": {
+                "Name": list_name_field(name),
+                "Deleted": {"value": 0},
+                "Imported": {"value": 0},
+                "IsGroup": {"value": 0},
+                "IsLinkedToAccount": {"value": 1},
+                "ReminderIDs": {"value": "[]"},
+                "ReminderIDsAsset": {"value": Value::Null},
+                "BadgeEmblem": {"value": "default"},
+                "Color": {
+                    "value": "{\"daSymbolicColorName\":\"custom\",\"ckSymbolicColorName\":\"pink\",\"daHexString\":\"#EA426A\",\"red\":234,\"green\":66,\"blue\":106,\"alpha\":1,\"colorRGBSpace\":2}"
+                },
+            }
+        }
+    })
+}
+
 fn build_create_op(
     title: &str,
     list_id: &str,
@@ -427,14 +445,25 @@ fn build_create_op(
     notes: Option<&str>,
 ) -> Result<Value> {
     let encoded = encode_title(title)?;
+    let empty_notes = encode_title("")?;
     let record_name = new_record_name();
+    let now = chrono::Utc::now().timestamp_millis();
     let zone_ref = json!({
         "ownerRecordName": owner_id,
         "zoneName": "Reminders",
     });
     let mut fields = serde_json::Map::new();
     fields.insert("TitleDocument".into(), json!({"value": encoded}));
+    fields.insert("TitleDocumentAsset".into(), json!({"value": Value::Null}));
+    fields.insert("NotesDocument".into(), json!({"value": empty_notes}));
+    fields.insert("NotesDocumentAsset".into(), json!({"value": Value::Null}));
     fields.insert("Completed".into(), json!({"value": 0}));
+    fields.insert("AllDay".into(), json!({"value": 0}));
+    fields.insert("CreationDate".into(), json!({"value": now}));
+    fields.insert("Deleted".into(), json!({"value": 0}));
+    fields.insert("Flagged".into(), json!({"value": 0}));
+    fields.insert("Imported".into(), json!({"value": 0}));
+    fields.insert("LastModifiedDate".into(), json!({"value": now}));
     if !list_id.is_empty() {
         fields.insert(
             "List".into(),
@@ -458,16 +487,106 @@ fn build_create_op(
         let enc = encode_title(n)?;
         fields.insert("NotesDocument".into(), json!({"value": enc}));
     }
+    let mut record = json!({
+        "recordType": "Reminder",
+        "recordName": record_name,
+        "fields": fields,
+    });
+    if !list_id.is_empty() {
+        record["parent"] = json!({"recordName": list_id});
+    }
     Ok(json!({
         "operationType": "create",
-        "record": {
-            "recordType": "Reminder",
-            "recordName": record_name,
-            "fields": fields,
-        }
+        "record": record,
     }))
 }
 
 fn check_ck_record_errors(result: &Value) -> Result<()> {
     crate::cloudkit::CloudKitClient::check_record_errors(result, Error::Reminders)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+
+    #[test]
+    fn list_name_field_matches_icloud_string_shape() {
+        let field = list_name_field("Groceries");
+
+        assert_eq!(field["value"], "Groceries");
+        assert_eq!(field["type"], "STRING");
+        assert_eq!(field["isEncrypted"], true);
+    }
+
+    #[test]
+    fn create_list_payload_uses_plain_encrypted_string_name() {
+        let op = build_create_list_op("List/ABC", "The list");
+        let fields = &op["record"]["fields"];
+
+        assert_eq!(op["operationType"], "create");
+        assert_eq!(op["record"]["recordType"], "List");
+        assert_eq!(fields["Name"]["value"], "The list");
+        assert_eq!(fields["Name"]["type"], "STRING");
+        assert_eq!(fields["Name"]["isEncrypted"], true);
+        assert_eq!(fields["ReminderIDs"]["value"], "[]");
+        assert!(fields["ReminderIDsAsset"]["value"].is_null());
+    }
+
+    #[test]
+    fn create_reminder_payload_matches_current_icloud_shape() {
+        let op = build_create_op("buy milk", "List/ABC", "_defaultOwner", None, None, 0, None)
+            .expect("payload");
+        let record = &op["record"];
+        let fields = &record["fields"];
+
+        assert_eq!(record["recordType"], "Reminder");
+        assert_eq!(record["parent"]["recordName"], "List/ABC");
+        assert_eq!(fields["List"]["value"]["recordName"], "List/ABC");
+        assert_eq!(
+            fields["List"]["value"]["zoneID"]["ownerRecordName"],
+            "_defaultOwner"
+        );
+        assert_eq!(fields["List"]["value"]["zoneID"]["zoneName"], "Reminders");
+        assert_eq!(fields["List"]["value"]["action"], "VALIDATE");
+        assert_eq!(fields["Completed"]["value"], 0);
+        assert_eq!(fields["AllDay"]["value"], 0);
+        assert_eq!(fields["Deleted"]["value"], 0);
+        assert_eq!(fields["Flagged"]["value"], 0);
+        assert_eq!(fields["Imported"]["value"], 0);
+        assert!(fields["TitleDocumentAsset"]["value"].is_null());
+        assert!(fields["NotesDocumentAsset"]["value"].is_null());
+
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(fields["TitleDocument"]["value"].as_str().expect("title"))
+            .expect("base64 title");
+        assert_eq!(raw.first(), Some(&0x78));
+        assert_eq!(
+            crate::title_doc::extract_title(fields["TitleDocument"]["value"].as_str().unwrap()),
+            "buy milk"
+        );
+    }
+
+    #[test]
+    fn create_reminder_payload_keeps_parent_reminder_separate_from_record_parent() {
+        let op = build_create_op(
+            "subtask",
+            "List/ABC",
+            "_defaultOwner",
+            Some("Reminder/PARENT"),
+            None,
+            0,
+            None,
+        )
+        .expect("payload");
+        let record = &op["record"];
+        let fields = &record["fields"];
+
+        assert_eq!(record["parent"]["recordName"], "List/ABC");
+        assert_eq!(
+            fields["ParentReminder"]["value"]["recordName"],
+            "Reminder/PARENT"
+        );
+        assert_eq!(fields["ParentReminder"]["value"]["action"], "VALIDATE");
+    }
 }

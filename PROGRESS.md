@@ -2,6 +2,52 @@
 
 Handoff log for cross-session work. New sessions should skim this before planning larger changes.
 
+## 2026-06-14 - Reminders CloudKit create payload protocol fix
+
+Fixed the empty-name bug for newly created Reminders lists and reminders by
+matching the current iCloud web payload shape captured in `/home/snowbear/icloud.har`.
+
+### Changed
+
+- Changed Reminders `TitleDocument` / `NotesDocument` writes from gzip to zlib
+  compressed protobuf while keeping gzip decode compatibility for older records.
+- Changed list create/rename to write `Name` as an encrypted CloudKit `STRING`
+  instead of base64 `BYTES`.
+- Added current iCloud baseline fields for list/reminder create payloads,
+  including reminder document asset null companions and the list record as the
+  CloudKit parent for new reminders.
+- Tightened list-name sync decoding so only legacy `BYTES` names are base64
+  decoded; current `STRING` names are used as-is.
+- Added protocol-shape tests for list names, reminder create fields, zlib title
+  documents, and legacy gzip title decoding.
+- Reinstalled the fixed binary with
+  `cargo install --path crates/icloud-cli --root /home/snowbear/.local --force --locked`.
+
+### Verified
+
+- HAR inspection showed list `Name` uses `{ type: "STRING", isEncrypted: true }`
+  and reminder title documents are zlib payloads.
+- `cargo fmt --all -- --check`
+- `cargo test -p icloud-api --locked`
+- `cargo test --workspace --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- Live disposable smoke against `target/debug/icloud`:
+  - created a unique reminder list and verified the synced list name was not empty
+  - added a reminder and verified the synced title was not empty
+  - renamed the reminder and list and verified both after force sync
+  - read the renamed reminder through `/Reminders/<List>/<Title>.md` in `icloud bash`
+- Live disposable smoke against `/home/snowbear/.local/bin/icloud`:
+  - created a unique list and reminder
+  - force-synced and verified non-empty list name and reminder title
+  - cleaned up the disposable list
+
+### Remaining risks
+
+- Reminders remains a private iCloud web protocol and can change without notice.
+- The implementation does not attempt to preserve or update Apple's
+  list-ordering CRDT fields when creating lists; current create/list/add smoke
+  works with the matched name/title payloads.
+
 ## 2026-06-13 - Remove Windows release support
 
 Removed Windows from the supported release surface before pushing the next
