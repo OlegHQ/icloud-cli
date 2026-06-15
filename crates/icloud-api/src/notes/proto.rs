@@ -224,16 +224,44 @@ fn decode_attachment_info(buf: &[u8]) -> AttachmentInfo {
 /// Encode a NoteDocument into a base64-encoded, zlib-compressed NoteStoreProto.
 pub fn encode_note_body(doc: &NoteDocument) -> Result<String> {
     let proto_bytes = encode_proto(doc);
+    encode_compressed(&proto_bytes)
+}
 
+/// Encode an updated Note body while reusing the existing TopoText replica UUID
+/// when it can be recovered from the current server body.
+pub fn encode_note_body_for_update(existing_b64: &str, doc: &NoteDocument) -> Result<String> {
+    let doc_uuid = extract_primary_replica_uuid(existing_b64).unwrap_or_else(uuid::Uuid::new_v4);
+    let proto_bytes = encode_proto_with_uuid(doc, *doc_uuid.as_bytes());
+    encode_compressed(&proto_bytes)
+}
+
+fn encode_compressed(proto_bytes: &[u8]) -> Result<String> {
     let mut zl = ZlibEncoder::new(Vec::new(), Compression::default());
-    zl.write_all(&proto_bytes)?;
+    zl.write_all(proto_bytes)?;
     let compressed = zl.finish()?;
     Ok(B64.encode(&compressed))
 }
 
+fn extract_primary_replica_uuid(b64: &str) -> Option<uuid::Uuid> {
+    if b64.is_empty() {
+        return None;
+    }
+    let raw = B64.decode(b64).ok()?;
+    let decompressed = decompress(&raw);
+    let document = proto_get_bytes(&decompressed, 2)?;
+    let note = proto_get_bytes(document, 3)?;
+    let metadata = proto_get_bytes(note, 4)?;
+    let uuid_entry = proto_get_bytes(metadata, 1)?;
+    let uuid_bytes = proto_get_bytes(uuid_entry, 1)?;
+    uuid::Uuid::from_slice(uuid_bytes).ok()
+}
+
 fn encode_proto(doc: &NoteDocument) -> Vec<u8> {
+    encode_proto_with_uuid(doc, *uuid::Uuid::new_v4().as_bytes())
+}
+
+fn encode_proto_with_uuid(doc: &NoteDocument, doc_uuid: [u8; 16]) -> Vec<u8> {
     let char_len = doc.text.chars().count() as u64;
-    let doc_uuid = *uuid::Uuid::new_v4().as_bytes();
 
     // CRDT operations (required for Apple Notes to render the body)
     let op1 = {
@@ -494,5 +522,56 @@ mod tests {
         assert!(decoded.runs[0].font.bold);
         assert!(!decoded.runs[0].font.italic);
         assert!(decoded.runs[0].strikethrough);
+    }
+
+    #[test]
+    fn update_body_reuses_existing_replica_uuid() {
+        let original = NoteDocument {
+            text: "Title\nOriginal body\n".to_string(),
+            runs: vec![
+                AttributeRun {
+                    length: 6,
+                    style: ParagraphStyle {
+                        style_type: StyleType::Title,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                AttributeRun {
+                    length: 14,
+                    style: ParagraphStyle::default(),
+                    ..Default::default()
+                },
+            ],
+        };
+        let updated = NoteDocument {
+            text: "Title\nUpdated body\n".to_string(),
+            runs: vec![
+                AttributeRun {
+                    length: 6,
+                    style: ParagraphStyle {
+                        style_type: StyleType::Title,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                AttributeRun {
+                    length: 13,
+                    style: ParagraphStyle::default(),
+                    ..Default::default()
+                },
+            ],
+        };
+
+        let original_b64 = encode_note_body(&original).unwrap();
+        let original_uuid = extract_primary_replica_uuid(&original_b64).unwrap();
+
+        let updated_b64 = encode_note_body_for_update(&original_b64, &updated).unwrap();
+        let updated_uuid = extract_primary_replica_uuid(&updated_b64).unwrap();
+        let decoded = decode_note_body(&updated_b64).unwrap();
+
+        assert_eq!(updated_uuid, original_uuid);
+        assert_eq!(decoded.text, updated.text);
+        assert_eq!(decoded.runs.len(), updated.runs.len());
     }
 }

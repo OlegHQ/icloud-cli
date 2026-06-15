@@ -12,6 +12,29 @@ use super::proto;
 use super::sync::NotesSyncEngine;
 use super::table;
 
+const NOTE_UPDATE_LOOKUP_KEYS: &[&str] = &[
+    "CreationDate",
+    "ModificationDate",
+    "TitleEncrypted",
+    "SnippetEncrypted",
+    "TextDataEncrypted",
+    "Folder",
+    "Folders",
+    "FoldersModificationDate",
+    "FirstAttachmentThumbnail",
+    "FirstAttachmentUTIEncrypted",
+    "TextDataAsset",
+];
+
+#[derive(Debug)]
+struct ServerNoteForUpdate {
+    change_tag: String,
+    short_guid: Option<String>,
+    creation_date: Option<Value>,
+    folders_modified_date: Option<Value>,
+    text_data_encrypted: String,
+}
+
 impl NotesSyncEngine {
     /// Build a closure that maps VFS note paths (e.g. `/Notes/Folder/Title.md`)
     /// back to `applenotes:note/UUID` URLs for the write path.
@@ -75,6 +98,47 @@ impl NotesSyncEngine {
             "recordName": folder_id,
             "action": "VALIDATE",
             "zoneID": { "zoneName": self.ck.zone() }
+        })
+    }
+
+    async fn lookup_note_for_update(&mut self, record_name: &str) -> Result<ServerNoteForUpdate> {
+        let owner = self.owner_id().await?;
+        let result = self
+            .ck
+            .lookup_records(&owner, &[record_name], NOTE_UPDATE_LOOKUP_KEYS)
+            .await?;
+        let rec = result["records"]
+            .as_array()
+            .and_then(|records| records.first())
+            .ok_or_else(|| Error::Notes(format!("note '{record_name}' not found")))?;
+        if let Some(code) = rec["serverErrorCode"].as_str() {
+            let reason = rec["reason"].as_str().unwrap_or("");
+            return Err(Error::Notes(format!("CloudKit {code}: {reason}")));
+        }
+        let change_tag = rec["recordChangeTag"]
+            .as_str()
+            .ok_or_else(|| Error::Notes(format!("missing change tag for '{record_name}'")))?
+            .to_string();
+        let fields = rec["fields"]
+            .as_object()
+            .ok_or_else(|| Error::Notes(format!("missing fields for note '{record_name}'")))?;
+        Ok(ServerNoteForUpdate {
+            change_tag,
+            short_guid: rec["shortGUID"].as_str().map(str::to_owned),
+            creation_date: fields
+                .get("CreationDate")
+                .and_then(|field| field.get("value"))
+                .cloned(),
+            folders_modified_date: fields
+                .get("FoldersModificationDate")
+                .and_then(|field| field.get("value"))
+                .cloned(),
+            text_data_encrypted: fields
+                .get("TextDataEncrypted")
+                .and_then(|field| field.get("value"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
         })
     }
 
@@ -219,7 +283,8 @@ impl NotesSyncEngine {
     /// Update a note's body from Markdown.
     pub async fn update_note(&mut self, partial: &str, md: &str) -> Result<()> {
         let _owner = self.owner_id().await?;
-        let (full, ct) = self.resolve_with_tag(partial)?;
+        let (full, _cached_ct) = self.resolve_with_tag(partial)?;
+        let server = self.lookup_note_for_update(&full).await?;
 
         let nd = self
             .cache
@@ -242,32 +307,43 @@ impl NotesSyncEngine {
             .chars()
             .take(200)
             .collect::<String>();
-        let body_b64 = proto::encode_note_body(&doc)?;
+        let body_b64 = proto::encode_note_body_for_update(&server.text_data_encrypted, &doc)?;
         let title_b64 = b64_encode_str(&title);
         let snippet_b64 = b64_encode_str(&snippet);
 
         let now = chrono::Utc::now().timestamp_millis();
         let fref = self.folder_ref(&folder_id);
+        let creation_date = server.creation_date.unwrap_or_else(|| Value::from(now));
+        let folders_modified_date = server
+            .folders_modified_date
+            .unwrap_or_else(|| Value::from(now));
+
+        let mut record = json!({
+            "recordType": "Note",
+            "recordName": &full,
+            "recordChangeTag": server.change_tag,
+            "parent": { "recordName": &folder_id },
+            "fields": {
+                "CreationDate": { "value": creation_date },
+                "ModificationDate": { "value": now },
+                "TitleEncrypted": { "value": title_b64 },
+                "SnippetEncrypted": { "value": snippet_b64 },
+                "TextDataEncrypted": { "value": body_b64 },
+                "Folder": { "value": fref },
+                "Folders": { "value": [fref] },
+                "FoldersModificationDate": { "value": folders_modified_date },
+                "FirstAttachmentThumbnail": {},
+                "FirstAttachmentUTIEncrypted": {},
+                "TextDataAsset": {},
+            }
+        });
+        if let Some(short_guid) = server.short_guid {
+            record["shortGUID"] = Value::String(short_guid);
+        }
 
         let op = json!({
             "operationType": "update",
-            "record": {
-                "recordType": "Note",
-                "recordName": &full,
-                "recordChangeTag": ct,
-                "parent": { "recordName": &folder_id },
-                "fields": {
-                    "ModificationDate": { "value": now },
-                    "TitleEncrypted": { "value": title_b64 },
-                    "SnippetEncrypted": { "value": snippet_b64 },
-                    "TextDataEncrypted": { "value": body_b64 },
-                    "Folder": { "value": fref },
-                    "Folders": { "value": [fref] },
-                    "FirstAttachmentThumbnail": {},
-                    "FirstAttachmentUTIEncrypted": {},
-                    "TextDataAsset": {},
-                }
-            }
+            "record": record
         });
 
         let result = modify_notes(&self.ck, vec![op]).await?;

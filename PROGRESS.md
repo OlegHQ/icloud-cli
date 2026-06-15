@@ -2,6 +2,50 @@
 
 Handoff log for cross-session work. New sessions should skim this before planning larger changes.
 
+## 2026-06-15 - Notes update TopoText replica reuse fix
+
+Addressed the likely cause of native Apple Notes showing duplicated content
+after CLI/VFS note edits. HAR inspection of `/home/snowbear/icloud2.har` showed
+browser edits preserve the existing `TextDataEncrypted` TopoText/CRDT identity
+instead of replacing it with a fresh full-document insertion on every save.
+
+### Changed
+
+- Added a Notes update encoder that reuses the existing server body's primary
+  TopoText replica UUID when writing `TextDataEncrypted`.
+- Changed `update_note()` to lookup the latest server Note record before
+  modifying, using the latest `recordChangeTag` and current encrypted body.
+- Matched more of the browser update payload shape by preserving/sending
+  `CreationDate`, `FoldersModificationDate`, and `shortGUID` when present.
+- Added a regression proving update encoding reuses the existing replica UUID
+  while still decoding to the updated text/runs.
+
+### Verified
+
+- HAR analysis showed the browser update is a single `records/modify` call and
+  that the edited body adds TopoText history instead of generating a fresh note
+  archive identity.
+- `cargo fmt --all -- --check`
+- `cargo test -p icloud-api update_body_reuses_existing_replica_uuid --locked -- --nocapture`
+- `cargo test -p icloud-api compare_with_web_app_format --locked -- --nocapture`
+- `cargo test -p icloud-api --locked`
+- `cargo test --workspace --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- Live disposable smoke against `target/debug/icloud`:
+  - created a checklist-heavy Note
+  - updated it through `icloud notes update`
+  - force-synced and read it back with the edited checklist text and tail marker
+  - deleted the disposable Note
+
+### Remaining risks
+
+- This is a conservative protocol fix, not a full TopoText diff/merge engine:
+  existing-note writes now reuse the server replica identity, but still rebuild
+  the body from Markdown rather than appending browser-style operation deltas.
+- Needs visual smoke in native Apple Notes before release/install; CLI live
+  smoke verified CloudKit write/readback, but not native-client rendering.
+- Already-duplicated Notes are not repaired automatically.
+
 ## 2026-06-14 - Reminders CloudKit create payload protocol fix
 
 Fixed the empty-name bug for newly created Reminders lists and reminders by
